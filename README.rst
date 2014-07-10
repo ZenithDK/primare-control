@@ -1,25 +1,25 @@
 **********
-Mopidy-NAD
+Mopidy-Primare
 **********
 
-.. image:: https://pypip.in/v/Mopidy-NAD/badge.png
-    :target: https://pypi.python.org/pypi/Mopidy-NAD/
+.. image:: https://pypip.in/v/Mopidy-Primare/badge.png
+    :target: https://pypi.python.org/pypi/Mopidy-Primare/
     :alt: Latest PyPI version
 
-.. image:: https://pypip.in/d/Mopidy-NAD/badge.png
-    :target: https://pypi.python.org/pypi/Mopidy-NAD/
+.. image:: https://pypip.in/d/Mopidy-Primare/badge.png
+    :target: https://pypi.python.org/pypi/Mopidy-Primare/
     :alt: Number of PyPI downloads
 
-.. image:: https://travis-ci.org/mopidy/mopidy-nad.png?branch=master
-    :target: https://travis-ci.org/mopidy/mopidy-nad
+.. image:: https://travis-ci.org/ZenithDK/mopidy-primare.png?branch=master
+    :target: https://travis-ci.org/ZenithDK/mopidy-primare
     :alt: Travis CI build status
 
-.. image:: https://coveralls.io/repos/mopidy/mopidy-nad/badge.png?branch=master
-   :target: https://coveralls.io/r/mopidy/mopidy-nad?branch=master
+.. image:: https://coveralls.io/repos/ZenithDK/mopidy-primare/badge.png?branch=master
+   :target: https://coveralls.io/r/ZenithDK/mopidy-primare?branch=master
    :alt: Test coverage
 
 `Mopidy <http://www.mopidy.com/>`_ extension for controlling volume using an
-external NAD amplifier. Developed and tested with a NAD C355BEE.
+external Primare amplifier. Developed and tested with a Primare i22.
 
 
 Installation
@@ -27,7 +27,7 @@ Installation
 
 Install by running::
 
-    sudo pip install Mopidy-NAD
+    sudo pip install Mopidy-Primare
 
 Or, if available, install the Debian/Ubuntu package from `apt.mopidy.com
 <http://apt.mopidy.com/>`_.
@@ -36,17 +36,17 @@ Or, if available, install the Debian/Ubuntu package from `apt.mopidy.com
 Configuration
 =============
 
-The Mopidy-NAD extension is enabled by default. To disable it, add the
+The Mopidy-Primare extension is enabled by default. To disable it, add the
 following to ``mopidy.conf``::
 
-    [nad]
+    [primare]
     enabled = false
 
-The NAD amplifier must be connected to the machine running Mopidy using a
+The Primare amplifier must be connected to the machine running Mopidy using a
 serial cable.
 
-To use the NAD amplifier ot control volume, set the ``audio/mixer`` config
-value in ``mopidy.conf`` to ``nadmixer``. You probably also needs to add some
+To use the Primare amplifier ot control volume, set the ``audio/mixer`` config
+value in ``mopidy.conf`` to ``primaremixer``. You probably also needs to add some
 properties to the ``audio/mixer`` config value.
 
 Supported properties includes:
@@ -68,49 +68,29 @@ Configuration examples::
 
     # Minimum configuration, if the amplifier is available at /dev/ttyUSB0
     [audio]
-    mixer = nadmixer
+    mixer = primaremixer
 
     # Minimum configuration, if the amplifier is available elsewhere
     [audio]
-    mixer = nadmixer port=/dev/ttyUSB3
+    mixer = primaremixer port=/dev/ttyUSB3
 
     # Full configuration
     [audio]
-    mixer = nadmixer port=/dev/ttyUSB0 source=aux speakers-a=on speakers-b=off
+    mixer = primaremixer port=/dev/ttyUSB0 source=aux speakers-a=on speakers-b=off
 
 
 Project resources
 =================
 
-- `Source code <https://github.com/mopidy/mopidy-nad>`_
-- `Issue tracker <https://github.com/mopidy/mopidy-nad/issues>`_
-- `Download development snapshot <https://github.com/mopidy/mopidy-nad/tarball/master#egg=Mopidy-NAD-dev>`_
+- `Source code <https://github.com/ZenithDK/mopidy-primare>`_
+- `Issue tracker <https://github.com/ZenithDK/mopidy-primare/issues>`_
+- `Download development snapshot <https://github.com/ZenithDK/mopidy-primare/tarball/master#egg=Mopidy-Primare-dev>`_
 
 
 Changelog
 =========
 
-v1.1 (2014-01-20)
+v0.1 (2014-07-10)
 -----------------
 
-- Require Mopidy >= 0.18.
-
-v1.0 (2013-10-08)
------------------
-
-- Update to match the ``cookiecutter-mopidy-ext`` project template.
-
-v0.3 (2013-04-16)
------------------
-
-- Include ``README.rst`` and ``LICENSE`` in PyPI package.
-
-v0.2 (2013-04-16)
------------------
-
-- Add missing ``create_track()`` helper function.
-
-v0.1 (2013-04-16)
------------------
-
-- Extracted extension from Mopidy core.
+- Copied from Mopidy-NAD

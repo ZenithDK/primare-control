@@ -1,4 +1,4 @@
-"""Mixer that controls volume using a NAD amplifier."""
+"""Mixer that controls volume using a Primare amplifier."""
 
 from __future__ import unicode_literals
 
@@ -14,26 +14,24 @@ try:
 except ImportError:
     serial = None  # noqa
 
-from mopidy_nad import talker
+from mopidy_primare import talker
 
 
 logger = logging.getLogger(__name__)
 
 
-class NadMixer(gst.Element, gst.ImplementsInterface, gst.interfaces.Mixer):
+class PrimareMixer(gst.Element, gst.ImplementsInterface, gst.interfaces.Mixer):
     __gstdetails__ = (
-        'NadMixer',
+        'PrimareMixer',
         'Mixer',
-        'Mixer to control NAD amplifiers using a serial link',
+        'Mixer to control Primare amplifiers using a serial link',
         'Mopidy')
 
     port = gobject.property(type=str, default='/dev/ttyUSB0')
     source = gobject.property(type=str)
-    speakers_a = gobject.property(type=str)
-    speakers_b = gobject.property(type=str)
 
     _volume_cache = 0
-    _nad_talker = None
+    _primare_talker = None
 
     def list_tracks(self):
         track = create_track(
@@ -54,25 +52,23 @@ class NadMixer(gst.Element, gst.ImplementsInterface, gst.interfaces.Mixer):
         if len(volumes):
             volume = volumes[0]
             self._volume_cache = volume
-            self._nad_talker.set_volume(volume)
+            self._primare_talker.set_volume(volume)
 
     def set_mute(self, track, mute):
-        self._nad_talker.mute(mute)
+        self._primare_talker.mute(mute)
 
     def do_change_state(self, transition):
         if transition == gst.STATE_CHANGE_NULL_TO_READY:
             if serial is None:
-                logger.warning('nadmixer dependency pyserial not found')
+                logger.warning('primaremixer dependency pyserial not found')
                 return gst.STATE_CHANGE_FAILURE
-            self._start_nad_talker()
+            self._start_primare_talker()
         return gst.STATE_CHANGE_SUCCESS
 
-    def _start_nad_talker(self):
-        self._nad_talker = talker.NadTalker.start(
+    def _start_primare_talker(self):
+        self._primare_talker = talker.PrimareTalker.start(
             port=self.port,
             source=self.source or None,
-            speakers_a=self.speakers_a or None,
-            speakers_b=self.speakers_b or None
         ).proxy()
 
 
