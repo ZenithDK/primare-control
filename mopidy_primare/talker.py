@@ -144,8 +144,11 @@ class PrimareTalker(pykka.ThreadingActor):
         # >>> hex = struct.unpack('cccccc', values['vol_up'])
         # >>> hex[2]
         # >>> '\xaa'
+        hex = struct.unpack('h' * len(reply))
 
-        struct.unpack(
+        # Validate reply
+        if hex[:1] != reply[:1] or hex[-2:] != reply[-2:]:
+
         return .replace('%s=' % key, '')
 
     def _command_device(self, cmd):
