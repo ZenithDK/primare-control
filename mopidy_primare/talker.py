@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 #  Command to toggle verbose setting. Command is write, variable is 13 (0x0d)
 #  and value is 0.
 #  0x02 0x57 0x0xd 0x00 0x10 0x03
+STX = slice(0, 1)
+DLE_ETX = slice(-2, None)
+CMD_VAR = slice(2, 3)
+REPLY_VAR = slice(2, 3)
+REPLY_DATA_BYTE = slice(2, 3)
 
 primare_cmd = {
     'standby': b'\x02\x57\x81\x00\x10\x03',
@@ -47,8 +52,8 @@ primare_cmd = {
     #  'mute_toggle': b'\x02\x57\x09\x00\x10\x03',
     'mute_enable': b'\x02\x57\x89\x01\x10\x03',
     'mute_disable': b'\x02\x57\x89\x00\x10\x03',
-    # 'vol_up': b'\x02\x57\x03\x01\x10\x03',
-    # 'vol_down': b'\x02\x57\x03\xFF\x10\x03',  # 0xFF = -1, or down one
+    'vol_up': b'\x02\x57\x03\x01\x10\x03',
+    'vol_down': b'\x02\x57\x03\xFF\x10\x03',  # 0xFF = -1, or down one
     'vol_ctrl': b'\x02\x57\x83\xAA\x10\x03',  # AA is absolute volume 00..79
     'verbose_enable': b'\x02\x57\x8D\x01\x10\x03',
     'verbose_disable': b'\x02\x57\x8D\x00\x10\x03',
@@ -140,7 +145,7 @@ class PrimareTalker(pykka.ThreadingActor):
         self._select_input_source()
         self.mute(False)
         self._command_device('verbose_enable')
-        #self._primare_volume = self.get_volume()
+        self._primare_volume = self._get_current_volume()
 
     def _get_device_model(self):
         manufacturer = self._ask_device('read_manufacturer')
@@ -172,6 +177,15 @@ class PrimareTalker(pykka.ThreadingActor):
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
         logger.debug('Setting volume to %d (%d)' %
                     (volume, target_primare_volume))
+        return self._command_device('vol_ctrl', target_primare_volume)
+
+    def _get_current_volume(self):
+        # Set the amplifier volume
+        volume_down = self._command_device('vol_down')
+        volume_up = self._command_device('vol_up')
+        logger.debug('Getting volume')
+        if volume_up == volume_down + 1:
+            self._primare_volume = volume_up
         return self._command_device('vol_ctrl')
 
     def _ask_device(self, request):
@@ -199,26 +213,38 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def _command_device(self, cmd, option=None):
         cmd_hex = primare_cmd[cmd]
-        reply_hex = primare_reply[cmd]
+        expected_reply_hex = primare_reply[cmd]
         if option is not None:
             cmd_hex = cmd_hex.replace('\xAA', option)
-            reply_hex = cmd_hex.replace('\xAA', option)
+            expected_reply_hex = expected_reply_hex.replace('\xAA', option)
         logger.info('Primare amplifier: Sending "%s" (%s)', cmd, cmd_hex)
         self._write(cmd_hex)
-        self._validate_reply(reply_hex, binascii.hexlify(self._readline()))
+        actual_reply_hex = binascii.hexlify(self._readline())
+        if self._validate_reply(expected_reply_hex, actual_reply_hex):
+            return actual_reply_hex[REPLY_DATA_BYTE]
+        else:
+            return
 
-    def _validate_reply(self, expected_reply, actual_reply):
-        STX = slice(0, 1)
-        DLE_ETX = slice(-2, len(actual_reply))
-        if (len(actual_reply) < 5 or
-            expected_reply[STX] != actual_reply[STX] or
+    def _validate_reply(self, cmd, actual_reply):
+        expected_reply = primare_reply[cmd]
+        if len(actual_reply) != 5:
+            logger.error('Reply length is not 5 bytes!')
+            return False
+        if (expected_reply[STX] != actual_reply[STX] or
                 expected_reply[DLE_ETX] != actual_reply[DLE_ETX]):
-            logger.info('Primare amplifier: Reply (%s) does not match \
-                        expected reply (%s)', binascii.unhexlify(actual_reply),
+            logger.info('Primare amplifier: Reply header/footer (%s) does not \
+                        match expected reply (%s)',
+                        binascii.unhexlify(actual_reply),
                         binascii.unhexlify(expected_reply))
+            return False
+        if primare_cmd[cmd][CMD_VAR] != actual_reply[REPLY_VAR]:
+            logger.info('Reply variable (%d) different from expected \
+                        variable: %d',
+                        primare_cmd[cmd][CMD_VAR], actual_reply[REPLY_VAR])
         else:
             logger.info('Primare amplifier: Reply (%s)',
                         binascii.unhexlify(actual_reply))
+            return True
 
     def _write(self, data):
         # Write data to device
