@@ -138,13 +138,13 @@ class PrimareTalker(pykka.ThreadingActor):
             parity=self.PARITY,
             stopbits=self.STOPBITS,
             timeout=self.TIMEOUT)
+        self._command_device('verbose_enable')
         self._get_device_model()
 
     def _set_device_to_known_state(self):
         self._power_device_on()
         self._select_input_source()
         self.mute(False)
-        self._command_device('verbose_enable')
         self._primare_volume = self._get_current_volume()
 
     def _get_device_model(self):
@@ -189,16 +189,20 @@ class PrimareTalker(pykka.ThreadingActor):
         return self._command_device('vol_ctrl')
 
     def _ask_device(self, request):
+        if type(primare_cmd[request]) == unicode:
+            request = request.encode('utf-8')
+        #logger.info('LASSE: request "%s" - binary: "%s"' % (request, binascii.hexlify(primare_cmd[request])))
         self._write(primare_cmd[request])
-        reply = self._readline()
+        actual_reply = self._readline()
+        logger.info('LASSE: reply unbinary: "%s"' % binascii.unhexlify(actual_reply))
         # TODO:
         # >>> values = { 'vol_up' : b'\x02\x57\xAA\x00\x10\x03'}
         # >>> hex = struct.unpack('cccccc', values['vol_up'])
         # >>> hex[2]
         # >>> '\xaa'
-        if len(reply) < 5:
+        if len(actual_reply) < 5:
             logger.info('Primare amplifier: Reply (%s) shorter than expected',
-                        binascii.unhexlify(reply))
+                        binascii.unhexlify(actual_reply))
             return
         else:
             reply_hex = struct.unpack('c' * len(reply))
@@ -214,10 +218,11 @@ class PrimareTalker(pykka.ThreadingActor):
     def _command_device(self, cmd, option=None):
         cmd_hex = primare_cmd[cmd]
         expected_reply_hex = primare_reply[cmd]
+        #logger.info('LASSE: cmd_hex: "%s" - exp_reply_hex: "%s"' % (cmd_hex, expected_reply_hex))
         if option is not None:
             cmd_hex = cmd_hex.replace('\xAA', option)
             expected_reply_hex = expected_reply_hex.replace('\xAA', option)
-        logger.info('Primare amplifier: Sending "%s" (%s)', cmd, cmd_hex)
+        logger.info('Primare amplifier: Sending "%s" (%s)', cmd, binascii.hexlify(cmd_hex))
         self._write(cmd_hex)
         actual_reply_hex = binascii.hexlify(self._readline())
         if self._validate_reply(expected_reply_hex, actual_reply_hex):
@@ -227,8 +232,8 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def _validate_reply(self, cmd, actual_reply):
         expected_reply = primare_reply[cmd]
-        if len(actual_reply) != 5:
-            logger.error('Reply length is not 5 bytes!')
+        if len(actual_reply) < 5:
+            logger.error('Reply length must at least be 5 bytes!')
             return False
         if (expected_reply[STX] != actual_reply[STX] or
                 expected_reply[DLE_ETX] != actual_reply[DLE_ETX]):
@@ -250,8 +255,8 @@ class PrimareTalker(pykka.ThreadingActor):
         # Write data to device
         if not self._device.isOpen():
             self._device.open()
-        self._device.write('\n%s\n' % data)
-        logger.debug('Write: %s', data)
+        self._device.write('%s' % data)
+        logger.debug('Write: "%s"', binascii.hexlify(data))
 
     def _readline(self):
         # Read line from device. The result is stripped for leading and
@@ -260,5 +265,5 @@ class PrimareTalker(pykka.ThreadingActor):
             self._device.open()
         result = self._device.readline().strip()
         if result:
-            logger.debug('Read: %s', result)
+            logger.debug('Read: "%s"', result)
         return result

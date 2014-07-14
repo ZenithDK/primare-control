@@ -58,12 +58,6 @@ Supported properties includes:
   ``aux``, ``disc``, ``tape``, ``tuner``, etc. Leave unset if you don't want
   the mixer to change it for you.
 
-- ``speakers-a``: Set to ``on`` or ``off`` if you want the mixer to make sure
-  that speaker set A is turned on or off. Leave unset if you don't want the
-  mixer to change it for you.
-
-- ``speakers-b``: See ``speakers-a``.
-
 Configuration examples::
 
     # Minimum configuration, if the amplifier is available at /dev/ttyUSB0
@@ -76,7 +70,7 @@ Configuration examples::
 
     # Full configuration
     [audio]
-    mixer = primaremixer port=/dev/ttyUSB0 source=aux speakers-a=on speakers-b=off
+    mixer = primaremixer port=/dev/ttyUSB0 source=aux
 
 
 Project resources
