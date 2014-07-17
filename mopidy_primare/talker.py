@@ -79,10 +79,11 @@ primare_reply = {
 # TODO:
 # * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
 #       incr and decr volume, instead of setting it to arbitrary default value
-#     -- Done, but something is amiss
+#     -- Done, but something is amiss, update to 0.19 first and test again
 # * Read out from serial while using remote to see if replies are sent when
 #   verbose is enabled
 #     -- Replies ARE sent, need another thread to handle input and update status??
+#     -- use this for EOL: http://pyserial.sourceforge.net/shortintro.html (pyserial eol)
 # * Better error handling
 # * ASAP: Update to 0.19 API
 # * ...
