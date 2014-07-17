@@ -42,37 +42,34 @@ logger = logging.getLogger(__name__)
 STX = slice(0, 1)
 DLE_ETX = slice(-2, None)
 CMD_VAR = slice(2, 3)
-REPLY_VAR = slice(2, 3)
+REPLY_VAR = slice(1, 2)
 REPLY_DATA_BYTE = slice(2, 3)
+REPLY_DATA_STRING = slice(2, -2)
 
+# All commands that have options have \xAA in their byte strings
+# This will be replaced in the _command_device() method
 primare_cmd = {
-    'standby': b'\x02\x57\x81\x00\x10\x03',
-    'operate': b'\x02\x57\x81\x01\x10\x03',
-    'input': b'\x02\x57\x82\xAA\x10\x03',  # AA is input 01..07
-    #  'mute_toggle': b'\x02\x57\x09\x00\x10\x03',
-    'mute_enable': b'\x02\x57\x89\x01\x10\x03',
-    'mute_disable': b'\x02\x57\x89\x00\x10\x03',
+    'power_ctrl': b'\x02\x57\x81\xAA\x10\x03',  # AA: 0 = standby, 1 = operate
+    'input': b'\x02\x57\x82\xAA\x10\x03',  # AA: 01-07 (input src)
+    'mute_ctrl': b'\x02\x57\x89\xAA\x10\x03',  # AA: 0 = mute, 1 = unmute
     'vol_up': b'\x02\x57\x03\x01\x10\x03',
     'vol_down': b'\x02\x57\x03\xFF\x10\x03',  # 0xFF = -1, or down one
     'vol_ctrl': b'\x02\x57\x83\xAA\x10\x03',  # AA is absolute volume 00..79
     'verbose_enable': b'\x02\x57\x8D\x01\x10\x03',
-    'verbose_disable': b'\x02\x57\x8D\x00\x10\x03',
-    'read_volume': b'\x02\x52\x03\x10\x03',  # TODO: Not in documentation - May need a '\x00' after 03?
     'read_inputname': b'\x02\x52\x14\x00\x10\x03',
     'read_manufacturer': b'\x02\x52\x15\x00\x10\x03',
     'read_modelname': b'\x02\x52\x16\x00\x10\x03',
     'read_swversion': b'\x02\x52\x17\x00\x10\x03',
 }
 
+# All replies to commands with options have \xAA in their byte strings
+# This will be replaced when XXX
 primare_reply = {
-    'standby': b'\x02\x01\x00\x10\x03',
-    'operate': b'\x02\x01\x01\x10\x03',
+    'power_ctrl': b'\x02\x01\x00\x10\x03',
     'input': b'\x02\x02\xAA\x10\x03',  # AA is input 01..07
-    'mute_enable': b'\x02\x09\x01\x10\x03',
-    'mute_disable': b'\x02\x09\x00\x10\x03',
+    'mute_ctrl': b'\x02\x09\x01\x10\x03',
     'vol_ctrl': b'\x02\x03\xAA\x10\x03',  # AA equals current volume
     'verbose_enable': b'\x02\x0D\x01\x10\x03',
-    'verbose_disable': b'\x02\x0D\x00\x10\x03',  # Never sent: verbose disabled
     'read_inputname': b'\x02\x14\xAA\x10\x03',  # AA+.. = Variable length
     'read_manufacturer': b'\x02\x15\xAA\x10\x03',  # AA+.. = Variable length
     'read_modelname': b'\x02\x16\xAA\x10\x03',  # AA+.. = Variable length
@@ -82,11 +79,12 @@ primare_reply = {
 # TODO:
 # * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
 #       incr and decr volume, instead of setting it to arbitrary default value
+#     -- Done, but something is amiss
 # * Read out from serial while using remote to see if replies are sent when
 #   verbose is enabled
-# * Check if the volume can be read out - otherwise set it to a default value
-#   and adjust from that
-# * Newlines or not?
+#     -- Replies ARE sent, need another thread to handle input and update status??
+# * Better error handling
+# * ASAP: Update to 0.19 API
 # * ...
 
 
@@ -108,12 +106,12 @@ class PrimareTalker(pykka.ThreadingActor):
     # Timeout in seconds used for read/write operations.
     # If you set the timeout too low, the reads will never get complete
     # confirmations. If you set the timeout too high, stuff takes more time.
-    # 0.8s seems like a good value for Primare i22.
-    TIMEOUT = 2.8  # TODO: Test different values
+    # 0.5s seems like a good value for Primare i22.
+    TIMEOUT = 0.5  # TODO: Test different values
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
-    VOLUME_LEVELS = 50  # TODO: Set to 50 for now as safe testing :) 79
+    VOLUME_LEVELS = 79
 
     def __init__(self, port, source):
         super(PrimareTalker, self).__init__()
@@ -138,10 +136,10 @@ class PrimareTalker(pykka.ThreadingActor):
             parity=self.PARITY,
             stopbits=self.STOPBITS,
             timeout=self.TIMEOUT)
-        self._command_device('verbose_enable')
         self._get_device_model()
 
     def _set_device_to_known_state(self):
+        self._command_device('verbose_enable')
         self._power_device_on()
         self._select_input_source()
         self.mute(False)
@@ -160,59 +158,64 @@ class PrimareTalker(pykka.ThreadingActor):
             Current input: %s """, manufacturer, model, swversion, inputname)
 
     def _power_device_on(self):
-        self._command_device('operate')
+        self._command_device('power_ctrl', '\x01')
 
     def _select_input_source(self):
         if self.source is not None:
-            self._command_device('input', '\x04')  # self.source.title())
+            self._command_device('input', chr(int(self.source.title())))
 
     def mute(self, mute):
         if mute:
-            self._command_device('mute_enable')
+            option = '\x01'
         else:
-            self._command_device('mute_disable')
+            option = '\x00'
+        reply = self._command_device('mute_ctrl', option)
+        if option == reply:
+            return True
+        else:
+            return False
 
     def set_volume(self, volume):
         # Set the amplifier volume
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
-        logger.debug('Setting volume to %d (%d)' %
+        logger.debug('LASSE Setting volume to %d (%d)' %
                     (volume, target_primare_volume))
-        return self._command_device('vol_ctrl', target_primare_volume)
+        vol_reply = self._command_device('vol_ctrl', chr(target_primare_volume))
+        logger.debug('LASSE Setting volume to %d (%d)' % binascii.hexlify(vol_reply))
+        logger.info('LASSE volume_reply %d' % binascii.hexlify(vol_reply))
+        if int(binascii.hexlify(vol_reply), 16) == target_primare_volume:
+            return True
+        else:
+            return False
 
     def _get_current_volume(self):
         # Set the amplifier volume
-        volume_down = 0 #+ self._command_device('vol_down')
-        volume_up = 0 #+ self._command_device('vol_up')
-        logger.debug('Getting volume')
-        if volume_up == volume_down + 1:
-            self._primare_volume = volume_up
-        return self._command_device('vol_ctrl', self._primare_volume)
+        volume = self._command_device('vol_down')
+        if volume:
+            logger.info('LASSE: _get_current_volume: "%s"' % binascii.hexlify(volume))
+            volume = chr(int(binascii.hexlify(volume), 16) + 1)
+            return self._command_device('vol_ctrl', volume)
+        else:
+            return 10  # TODO - error handling
 
     def _ask_device(self, request):
-#        if type(primare_cmd[request]) == unicode:
-#            request = request.encode('utf-8')
-        #logger.info('LASSE: request "%s" - binary: "%s"' % (request, binascii.hexlify(primare_cmd[request])))
+        logger.info('LASSE: request "%s" - binary: "%s"' % (request, binascii.hexlify(primare_cmd[request])))
         self._write(primare_cmd[request])
-        actual_reply = self._readline()
-        logger.info('LASSE: _ask_device reply "%s"' % actual_reply)
-        # TODO:
-        # >>> values = { 'vol_up' : b'\x02\x57\xAA\x00\x10\x03'}
-        # >>> hex = struct.unpack('cccccc', values['vol_up'])
-        # >>> hex[2]
-        # >>> '\xaa'
-        if len(actual_reply) < 5:
-            logger.info('Primare amplifier: Reply (%s) shorter than expected, len: %d' %
-                        (actual_reply, len(actual_reply)))
+        reply_hex = self._readline()
+        logger.info('LASSE: _ask_device reply "%s"' % binascii.hexlify(reply_hex))
+        if len(reply_hex) < 5:
+            logger.info('Primare amplifier: Reply "%s" shorter than expected, len: %d' %
+                        (reply_hex, len(reply_hex)))
             return
         else:
-            actual_reply_hex = struct.unpack('c' * len(actual_reply))
-            if self._validate_reply(request, primare_reply[request], reply_hex):
-                return ''.join(reply_hex[1:-2])
+            reply_string = struct.unpack('c' * len(reply_hex), reply_hex)
+            if self._validate_reply(request, reply_hex):
+                return ''.join(reply_string)
             else:
-                logger.info('Primare amplifier: Reply (%s) does not match \
-                            expected reply (%s)',
-                            binascii.unhexlify(reply_hex),
-                            binascii.unhexlify(reply[request]))
+                logger.info('Primare amplifier: Reply "%s" does not match ' +
+                            'expected reply "%s"',
+                            binascii.hexlify(reply_hex),
+                            binascii.hexlify(primare_reply[request]))
                 return
 
     def _command_device(self, cmd, option=None):
@@ -221,36 +224,44 @@ class PrimareTalker(pykka.ThreadingActor):
             expected_reply_hex = primare_reply['vol_ctrl']
         else:
             expected_reply_hex = primare_reply[cmd]
-        #logger.info('LASSE: cmd_hex: "%s" - exp_reply_hex: "%s"' % (cmd_hex, expected_reply_hex))
         if option is not None:
             cmd_hex = cmd_hex.replace('\xAA', option)
-            expected_reply_hex = expected_reply_hex.replace('\xAA', option)
         logger.info('Primare amplifier: Sending "%s" (%s)', cmd, binascii.hexlify(cmd_hex))
         self._write(cmd_hex)
-        actual_reply_hex = binascii.hexlify(self._readline())
-        if self._validate_reply(cmd, expected_reply_hex, actual_reply_hex):
-            return actual_reply_hex[REPLY_DATA_BYTE]
+        reply_hex = self._readline()
+        if self._validate_reply(cmd, reply_hex, option):
+            return reply_hex[REPLY_DATA_BYTE]
         else:
             return
 
-    def _validate_reply(self, cmd, expected_reply_hex, actual_reply_hex):
+    def _validate_reply(self, cmd, actual_reply_hex, option=None):
+        if cmd == 'vol_up' or cmd == 'vol_down':
+            expected_reply_hex = primare_reply['vol_ctrl']
+        else:
+            expected_reply_hex = primare_reply[cmd]
+        if option is not None:
+            expected_reply_hex = expected_reply_hex.replace('\xAA', option)
         if len(actual_reply_hex) < 5:
-            logger.error('Reply length must at least be 5 bytes!')
+            logger.error('Reply length must at least be 5 bytes - was only %d!',
+                         len(actual_reply_hex))
             return False
         if (expected_reply_hex[STX] != actual_reply_hex[STX] or
                 expected_reply_hex[DLE_ETX] != actual_reply_hex[DLE_ETX]):
-            logger.info('Primare amplifier: Reply header/footer (%s) does not \
-                        match expected reply (%s)',
-                        binascii.unhexlify(actual_reply_hex),
-                        binascii.unhexlify(expected_reply_hex))
+            logger.info('Primare amplifier: Reply header/footer "%s" does not ' +
+                        'match expected reply "%s"' %
+                        (binascii.hexlify(actual_reply_hex),
+                        binascii.hexlify(expected_reply_hex)))
             return False
-        if primare_cmd[cmd][CMD_VAR] != actual_reply_hex[REPLY_VAR]:
-            logger.info('Reply variable (%d) different from expected \
-                        variable: %d',
-                        primare_cmd[cmd][CMD_VAR], actual_reply_hex[REPLY_VAR])
+        if ((primare_cmd[cmd][CMD_VAR] != actual_reply_hex[REPLY_VAR]) and
+                ((int(binascii.hexlify(primare_cmd[cmd][CMD_VAR]), 16) ^ 0x80) != int(binascii.hexlify((actual_reply_hex[REPLY_VAR])), 16))):
+            logger.info('Reply variable "%s" different from expected ' +
+                        'variable: "%s"',
+                        binascii.hexlify(actual_reply_hex[REPLY_VAR]),
+                        binascii.hexlify(primare_cmd[cmd][CMD_VAR]))
+            return False
         else:
-            logger.info('Primare amplifier: Reply (%s)',
-                        binascii.unhexlify(actual_reply_hex))
+            logger.info('Primare amplifier: Reply "%s"',
+                        binascii.hexlify(actual_reply_hex))
             return True
 
     def _write(self, data):
@@ -267,7 +278,7 @@ class PrimareTalker(pykka.ThreadingActor):
             self._device.open()
         result = self._device.readline().strip()
         if result:
-            logger.debug('Read: "%s"', result)
+            logger.debug('Read: "%s"', binascii.hexlify(result))
         else:
-            logger.debug('Read: "%s" - len: %d' % (result, len(result)))
+            logger.debug('Read(0): "%s" - len: %d' % (binascii.hexlify(result), len(result)))
         return result
