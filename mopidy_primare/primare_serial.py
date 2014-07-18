@@ -141,16 +141,19 @@ class PrimareTalker(pykka.ThreadingActor):
 
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = None
+        print '__init__ was called'
 
     def on_start(self):
+        print 'on_start is called'
         logging.basicConfig()
         self._open_connection()
-        #self._print_device_info()
-        #self._set_device_to_known_state()
+        self._print_device_info()
+        self._set_device_to_known_state()
         self._primare_reader()
 
     # Private methods
     def _open_connection(self):
+        print 'Primare amplifier: Connecting through "%s"' % self._port
         logger.info('Primare amplifier: Connecting through "%s"', self._port)
         self._device = serial.Serial(
             port=self._port,
@@ -162,9 +165,9 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def _set_device_to_known_state(self):
         self.verbose_set(True)
-        self.operate()
+        self.power_on()
         self.input_set(self._input_source)
-        self.mute(False)
+        self.mute_set(False)
         self._volume = self._get_current_volume()
 
     def _print_device_info(self):
@@ -172,6 +175,12 @@ class PrimareTalker(pykka.ThreadingActor):
         model = self._send_command('modelname_get')
         swversion = self._send_command('swversion_get')
         inputname = self._send_command('inputname_current_get')
+
+        print """Connected to:
+            Manufacturer:  %s
+            Model:         %s
+            SW Version:    %s
+            Current input: %s """, manufacturer, model, swversion, inputname
 
         logger.info("""Connected to:
             Manufacturer:  %s
@@ -210,6 +219,7 @@ class PrimareTalker(pykka.ThreadingActor):
             if option is not None:
                 cmd = cmd.replace('YY', option)
             self._write(cmd)
+            print "_send_command - after write"
             reply = self._readline()
             print "HU HEJ - reply: %s" % binascii.hexlify(reply)
         print "_send_command - post lock"
@@ -227,9 +237,10 @@ class PrimareTalker(pykka.ThreadingActor):
         # We need to replace single DLE (0x10) with double DLE to discern it
         data = data.replace('10', '1010')
         # Convert ascii string to binary
-        data_hex = binascii.unhexlify(data)
-        data = BYTE_STX + BYTE_WRITE + data_hex + BYTE_DLE_ETX
-        self._device.write(data)
+        binary_cmd = binascii.unhexlify(data)
+        binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
+        self._device.write(binary_data)
+        print 'Write: %s' % data
         logger.debug('Write: %s', data)
 
     def _readline(self):
@@ -239,7 +250,7 @@ class PrimareTalker(pykka.ThreadingActor):
         eol = binascii.hexlify(BYTE_DLE_ETX)
         #result = self._device.readline(eol)
         result = self._device.readline()
-        print('Read: %s', binascii.hexlify(result))  # if result else "")
+        print 'Read: %s' % binascii.hexlify(result)  # if result else "")
         logger.debug('Read: %s', binascii.hexlify(result))  # if result else "")
         if result:
             reply_string = struct.unpack('c' * len(result), result)
