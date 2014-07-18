@@ -84,6 +84,7 @@ primare_reply = {
 #   verbose is enabled
 #     -- Replies ARE sent, need another thread to handle input and update status??
 #     -- use this for EOL: http://pyserial.sourceforge.net/shortintro.html (pyserial eol)
+# * Volume starts at 0? Test using ncmpcpp
 # * Better error handling
 # * ASAP: Update to 0.19 API
 # * ...
