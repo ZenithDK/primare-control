@@ -8,7 +8,13 @@ import serial
 import struct
 import threading
 
+import time
+
 logger = logging.getLogger(__name__)
+
+#from mopidy_primare import primare_serial
+#pt = primare_serial.PrimareTalker.start(port="/dev/ttyUSB0", input_source=None).proxy()
+#pt.power_on()
 
 # Primare documentation on their RS232 protocol writes this:
 #  == Command structure ==
@@ -139,14 +145,15 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def on_start(self):
         self._open_connection()
-        self._print_device_info()
-        self._set_device_to_known_state()
+        #self._print_device_info()
+        #self._set_device_to_known_state()
+        pass
 
     # Private methods
     def _open_connection(self):
-        logger.info('Primare amplifier: Connecting through "%s"', self.port)
+        logger.info('Primare amplifier: Connecting through "%s"', self._port)
         self._device = serial.Serial(
-            port=self.port,
+            port=self._port,
             baudrate=self.BAUDRATE,
             bytesize=self.BYTESIZE,
             parity=self.PARITY,
@@ -161,10 +168,10 @@ class PrimareTalker(pykka.ThreadingActor):
         self._volume = self._get_current_volume()
 
     def _print_device_info(self):
-        manufacturer = self._ask_device('read_manufacturer')
-        model = self._ask_device('read_modelname')
-        swversion = self._ask_device('read_swversion')
-        inputname = self._ask_device('read_inputname')
+        manufacturer = self._send_command('manufacturer_get')
+        model = self._send_command('modelname_get')
+        swversion = self._send_command('swversion_get')
+        inputname = self._send_command('inputname_current_get')
 
         logger.info("""Connected to:
             Manufacturer:  %s
@@ -175,13 +182,18 @@ class PrimareTalker(pykka.ThreadingActor):
     def _primare_reader(self):
         # The reader will forever do readline, unless _send_command
         # takes the lock to send a command and get a reply
+        time.sleep(5)
+        print "_primare_reader - starting"
         while(True):
-            with lock:
+            print "_primare_reader - pre lock"
+            with self._lock:
+                print "_primare_reader - in lock"
                 logger.debug("_primare_reader running")
                 reply = self._readline()
+                print "_primare_reader - readline"
                 if reply != "":
                     _handle_unsolicited_reply()
-
+            print "_primare_reader - post lock"
 
     def _get_current_volume(self):
         volume = self.volume_down()
@@ -190,10 +202,17 @@ class PrimareTalker(pykka.ThreadingActor):
     def _send_command(self, cmd, option=None):
         #if type(value) == unicode:
         #    value = value.encode('utf-8')
-        with lock:
+        print "_send_command - pre lock"
+        print "_send_command - pre lock - lock.locked: %s" % self._lock.locked()
+        with self._lock:
+            print "_send_command - in lock"
             cmd = PRIMARE_CMD['power_on'][CMD]
+            if option is not None:
+                cmd = cmd.replace('YY', option)
             self._write(cmd)
             reply = self._readline()
+            print "HU HEJ"
+        print "_send_command - post lock"
 
 
     def _validate_reply(self, cmd, actual_reply_hex, option=None):
@@ -220,21 +239,23 @@ class PrimareTalker(pykka.ThreadingActor):
         logger.debug('Read: %s', binascii.hexlify(result)) #if result else "")
         if result:
             reply_string = struct.unpack('c' * len(result), result)
+            # reply_string = reply_string.replace('1010', '10') # TODO: How to do this?
             result = ''.join(reply_string[POS_REPLY_DATA])
         return result
 
     # Public methods
     def power_on(self):
+        print "POWER ON"
         self._send_command('power_on')
 
     def power_off(self):
-        pass
+        self._send_command('power_off')
 
     def power_toggle(self):
         pass
 
-    def input_set(self, input):
-        pass
+    def input_set(self, input_source):
+        self._send_command('input_set', input_source)
 
     def input_next(self):
         pass
