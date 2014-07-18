@@ -147,7 +147,7 @@ class PrimareTalker(pykka.ThreadingActor):
         self._open_connection()
         #self._print_device_info()
         #self._set_device_to_known_state()
-        pass
+        self._primare_reader()
 
     # Private methods
     def _open_connection(self):
@@ -184,16 +184,16 @@ class PrimareTalker(pykka.ThreadingActor):
         # takes the lock to send a command and get a reply
         time.sleep(5)
         print "_primare_reader - starting"
-        while(True):
-            print "_primare_reader - pre lock"
-            with self._lock:
-                print "_primare_reader - in lock"
-                logger.debug("_primare_reader running")
-                reply = self._readline()
-                print "_primare_reader - readline"
-                if reply != "":
-                    self._handle_unsolicited_reply()
-            print "_primare_reader - post lock"
+        # while(True):
+        #     print "_primare_reader - pre lock"
+        #     with self._lock:
+        #         print "_primare_reader - in lock"
+        #         logger.debug("_primare_reader running")
+        #         reply = self._readline()
+        #         print "_primare_reader - readline"
+        #         if reply != "":
+        #             self._handle_unsolicited_reply()
+        #     print "_primare_reader - post lock"
 
     def _get_current_volume(self):
         volume = self.volume_down()
@@ -237,7 +237,9 @@ class PrimareTalker(pykka.ThreadingActor):
         if not self._device.isOpen():
             self._device.open()
         eol = binascii.hexlify(BYTE_DLE_ETX)
-        result = self._device.readline(eol)
+        #result = self._device.readline(eol)
+        result = self._device.readline()
+        print('Read: %s', binascii.hexlify(result))  # if result else "")
         logger.debug('Read: %s', binascii.hexlify(result))  # if result else "")
         if result:
             reply_string = struct.unpack('c' * len(result), result)
