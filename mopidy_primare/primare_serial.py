@@ -143,6 +143,7 @@ class PrimareTalker(pykka.ThreadingActor):
         self._volume = None
 
     def on_start(self):
+        logging.basicConfig()
         self._open_connection()
         #self._print_device_info()
         #self._set_device_to_known_state()
