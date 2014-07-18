@@ -49,7 +49,48 @@ logger = logging.getLogger(__name__)
 #  Command to toggle verbose setting. Command is write, variable is 13 (0x0d)
 #  and value is 0.
 #  0x02 0x57 0x0xd 0x00 0x10 0x03
+POS_STX = slice(0, 1)
+POS_DLE_ETX = slice(-2, None)
+POS_CMD_VAR = slice(2, 3)
+POS_REPLY_VAR = slice(1, 2)
+POS_REPLY_DATA = slice(2, -2)
+BYTE_STX = '\x02'
+BYTE_WRITE = '\x57'
+BYTE_READ = '\x52'
+BYTE_DLE_ETX = '\x10\x03'
 
+CMD = 0
+REPLY = 1
+PRIMARE_CMD = {
+    'power_toggle': ['0100', '01'],
+    'power_on': ['8101', '0101'],
+    'power_off': ['8100', '0100'],
+    'ir_input_set': ['02YY', '02YY'],
+    'input_next': ['0201', '02'],
+    'input_prev': ['02FF', '01'],
+    'volume_set': ['83FF', '03FF'],
+    'volume_up': ['0301', '03'],
+    'volume_down': ['03FF', '03'],
+    'balance_adjust': ['04YY', '04'],
+    'balance_set': ['84YY', '04YY'],
+    'mute_toggle': ['0900', '09'],
+    'mute_set': ['89YY', '09YY'],
+    'dim_cycle': ['0A00', '0A'],
+    'dim_set': ['0AYY', '8AYY'],
+    'verbose_toggle': ['0D00', '0D'],
+    'verbose_set': ['8DYY', '0DYY'],
+    'menu_toggle': ['0E01', '0E'],
+    'menu_set': ['8EYY', '0EYY'],
+    'remote_cmd': ['0FYY', 'YY'],
+    'ir_input_toggle': ['1200', '12'],
+    'ir_input_set': ['92YY', '12YY'],
+    'recall_factory_settings': ['1300', ''],
+    'inputname_current_get': ['1400', '14YY'],
+    'inputname_specific_get': ['94YY', '94YY'],
+    'manufacturer_get': ['1500', '15'],
+    'modelname_get': ['16', '16'],
+    'swversion_get': ['17', '17']
+}
 # TODO:
 # * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
 #       incr and decr volume, instead of setting it to arbitrary default value
@@ -63,6 +104,7 @@ logger = logging.getLogger(__name__)
 # * ASAP: Update to 0.19 API
 # * ...
 
+
 class PrimareTalker(pykka.ThreadingActor):
     """
     Independent thread which does the communication with the Primare amplifier.
@@ -71,49 +113,6 @@ class PrimareTalker(pykka.ThreadingActor):
     block other requests while doing rather time consuming work like
     calibrating the Primare amplifier's volume.
     """
-
-    POS_STX = slice(0, 1)
-    POS_DLE_ETX = slice(-2, None)
-    POS_CMD_VAR = slice(2, 3)
-    POS_REPLY_VAR = slice(1, 2)
-    POS_REPLY_DATA = slice(2, -2)
-    BYTE_STX = '\x02'
-    BYTE_WRITE = '\x57'
-    BYTE_READ = '\x52'
-    BYTE_DLE_ETX = '\x10\x03'
-
-    CMD = 0
-    REPLY = 1
-    PRIMARE_CMD = {
-        'power_toggle': ['0100', '01'],
-        'power_on': ['8101', '0101'],
-        'power_off': ['8100', '0100'],
-        'ir_input_set': ['02YY', '02YY'],
-        'input_next': ['0201', '02'],
-        'input_prev': ['02FF', '01'],
-        'volume_set': ['83FF', '03FF'],
-        'volume_up': ['0301', '03'],
-        'volume_down': ['03FF', '03'],
-        'balance_adjust': ['04YY', '04'],
-        'balance_set': ['84YY', '04YY'],
-        'mute_toggle': ['0900', '09'],
-        'mute_set': ['89YY', '09YY'],
-        'dim_cycle': ['0A00', '0A'],
-        'dim_set': ['0AYY', '8AYY'],
-        'verbose_toggle': ['0D00', '0D'],
-        'verbose_set': ['8DYY', '0DYY'],
-        'menu_toggle': ['0E01', '0E'],
-        'menu_set': ['8EYY', '0EYY'],
-        'remote_cmd': ['0FYY', 'YY'],
-        'ir_input_toggle': ['1200', '12'],
-        'ir_input_set': ['92YY', '12YY'],
-        'recall_factory_settings': ['1300', ''],
-        'inputname_current_get': ['1400', '14YY'],
-        'inputname_specific_get': ['94YY', '94YY'],
-        'manufacturer_get': ['1500', '15'],
-        'modelname_get': ['16', '16'],
-        'swversion_get': ['17', '17']
-    }
 
     # Serial link config
     BAUDRATE = 4800
@@ -192,7 +191,7 @@ class PrimareTalker(pykka.ThreadingActor):
                 reply = self._readline()
                 print "_primare_reader - readline"
                 if reply != "":
-                    _handle_unsolicited_reply()
+                    self._handle_unsolicited_reply()
             print "_primare_reader - post lock"
 
     def _get_current_volume(self):
@@ -211,9 +210,11 @@ class PrimareTalker(pykka.ThreadingActor):
                 cmd = cmd.replace('YY', option)
             self._write(cmd)
             reply = self._readline()
-            print "HU HEJ"
+            print "HU HEJ - reply: %s" % binascii.hexlify(reply)
         print "_send_command - post lock"
 
+    def _handle_unsolicited_reply(self):
+        pass
 
     def _validate_reply(self, cmd, actual_reply_hex, option=None):
         pass
@@ -236,7 +237,7 @@ class PrimareTalker(pykka.ThreadingActor):
             self._device.open()
         eol = binascii.hexlify(BYTE_DLE_ETX)
         result = self._device.readline(eol)
-        logger.debug('Read: %s', binascii.hexlify(result)) #if result else "")
+        logger.debug('Read: %s', binascii.hexlify(result))  # if result else "")
         if result:
             reply_string = struct.unpack('c' * len(result), result)
             # reply_string = reply_string.replace('1010', '10') # TODO: How to do this?
