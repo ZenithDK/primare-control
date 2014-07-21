@@ -60,36 +60,38 @@ BYTE_READ = '\x52'
 BYTE_DLE_ETX = '\x10\x03'
 
 CMD = 0
-REPLY = 1
+VARIABLE = 1
+REPLY = 2
+
 PRIMARE_CMD = {
-    'power_toggle': ['0100', '01'],
-    'power_on': ['8101', '0101'],
-    'power_off': ['8100', '0100'],
-    'input_set': ['82YY', '02YY'],
-    'input_next': ['0201', '02'],
-    'input_prev': ['02FF', '01'],
-    'volume_set': ['83FF', '03FF'],
-    'volume_up': ['0301', '03'],
-    'volume_down': ['03FF', '03'],
-    'balance_adjust': ['04YY', '04'],
-    'balance_set': ['84YY', '04YY'],
-    'mute_toggle': ['0900', '09'],
-    'mute_set': ['89YY', '09YY'],
-    'dim_cycle': ['0A00', '0A'],
-    'dim_set': ['0AYY', '8AYY'],
-    'verbose_toggle': ['0D00', '0D'],
-    'verbose_set': ['8DYY', '0DYY'],
-    'menu_toggle': ['0E01', '0E'],
-    'menu_set': ['8EYY', '0EYY'],
-    'remote_cmd': ['0FYY', 'YY'],
-    'ir_input_toggle': ['1200', '12'],
-    'ir_input_set': ['92YY', '12YY'],
-    'recall_factory_settings': ['1300', ''],
-    'inputname_current_get': ['1400', '14YY'],
-    'inputname_specific_get': ['94YY', '94YY'],
-    'manufacturer_get': ['1500', '15'],
-    'modelname_get': ['16', '16'],
-    'swversion_get': ['17', '17']
+    'power_toggle': ['W', '0100', '01'],
+    'power_on': ['W', '8101', '0101'],
+    'power_off': ['W', '8100', '0100'],
+    'input_set': ['W', '82YY', '02YY'],
+    'input_next': ['W', '0201', '02'],
+    'input_prev': ['W', '02FF', '01'],
+    'volume_set': ['W', '83FF', '03FF'],
+    'volume_up': ['W', '0301', '03'],
+    'volume_down': ['W', '03FF', '03'],
+    'balance_adjust': ['W', '04YY', '04'],
+    'balance_set': ['W', '84YY', '04YY'],
+    'mute_toggle': ['W', '0900', '09'],
+    'mute_set': ['W', '89YY', '09YY'],
+    'dim_cycle': ['W', '0A00', '0A'],
+    'dim_set': ['W', '0AYY', '8AYY'],
+    'verbose_toggle': ['W', '0D00', '0D'],
+    'verbose_set': ['W', '8DYY', '0DYY'],
+    'menu_toggle': ['W', '0E01', '0E'],
+    'menu_set': ['W', '8EYY', '0EYY'],
+    'remote_cmd': ['W', '0FYY', 'YY'],
+    'ir_input_toggle': ['W', '1200', '12'],
+    'ir_input_set': ['W', '92YY', '12YY'],
+    'recall_factory_settings': ['R', '1300', ''],
+    'inputname_current_get': ['R', '1400', '14YY'],
+    'inputname_specific_get': ['R', '94YY', '94YY'],
+    'manufacturer_get': ['R', '1500', '15'],
+    'modelname_get': ['R', '1600', '16'],
+    'swversion_get': ['R', '1700', '17']
 }
 # TODO:
 # * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
@@ -209,48 +211,54 @@ class PrimareTalker(pykka.ThreadingActor):
         else:
             return None
 
-    def _send_command(self, cmd, option=None):
+    def _send_command(self, variable, option=None):
         #if type(value) == unicode:
         #    value = value.encode('utf-8')
-        logger.debug('_send_command - pre lock - lock.locked: %s', self._lock.locked())
+        #logger.debug('_send_command - pre lock - lock.locked: %s',
+        #             self._lock.locked())
         with self._lock:
-            logger.debug('_send_command - in lock')
-            cmd = PRIMARE_CMD[cmd][CMD]
+            #logger.debug('_send_command - in lock')
+            command = PRIMARE_CMD[variable][VARIABLE]
+            data = PRIMARE_CMD[variable][CMD]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
-                cmd = cmd.replace('YY', option)
-            logger.debug('_send_command - before write - cmd: "%s", option: "%s"', cmd, option)
-            self._write(cmd)
-            logger.debug('_send_command - after write - cmd: %s', cmd)
+                data = data.replace('YY', option)
+            #logger.debug(
+            #    '_send_command - before write - data: "%s", option: "%s"',
+            #    data, option)
+            self._write(command, data)
+            logger.debug('_send_command - after write - data: %s', data)
             reply = self._readline()
-            logger.debug('HU HEJ - reply: %s' % binascii.hexlify(reply))
         logger.debug('_send_command - post lock')
+        #logger.debug('HU HEJ - reply: %s' % binascii.hexlify(reply))
+        return reply
 
     def _handle_unsolicited_reply(self):
         pass
 
-    def _validate_reply(self, cmd, actual_reply_hex, option=None):
+    def _validate_reply(self, variable, actual_reply_hex, option=None):
         pass
 
-    def _write(self, data):
+    def _write(self, cmd_type, data):
         # We need to replace single DLE (0x10) with double DLE to discern it
         data_safe = ''
         for index in xrange(0, len(data) - 1, 2):
-            pair = data[index:index+2]
+            pair = data[index:index + 2]
             if pair == '10':
                 data_safe += '1010'
             else:
                 data_safe += pair
         # Convert ascii string to binary
         binary_cmd = binascii.unhexlify(data_safe)
-        binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
+        if cmd_type == 'W':
+            binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
+        else:
+            binary_data = BYTE_STX + BYTE_READ + binary_cmd + BYTE_DLE_ETX
         # Write data to device.
         if not self._device.isOpen():
             self._device.open()
         self._device.write(binary_data)
-        logger.debug('Write: %s', data_safe)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
-        logger.debug('WriteHex(len: %d): %s', len(binary_data), binary_data)
 
     def _readline(self):
         # Read line from device.
@@ -263,8 +271,17 @@ class PrimareTalker(pykka.ThreadingActor):
         if result:
             logger.debug('Read: "%s"', binascii.hexlify(result))
             reply_string = struct.unpack('c' * len(result), result)
-            # reply_string = reply_string.replace('1010', '10') # TODO: How to do this?
-            result = ''.join(reply_string[POS_REPLY_DATA])
+
+            # We need to replace single DLE (0x10) with double DLE to discern it
+            data_safe = ''
+            for index in xrange(0, len(reply_string) - 1, 2):
+                pair = reply_string[index:index + 2]
+                if pair == '10':
+                    data_safe += '1010'
+                else:
+                    data_safe += pair
+
+            result = ''.join(data_safe[POS_REPLY_DATA])
         else:
             logger.debug('Read(0): "%s" - len: %d' % (binascii.hexlify(result), len(result)))
         return result
