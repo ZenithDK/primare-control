@@ -218,8 +218,8 @@ class PrimareTalker(pykka.ThreadingActor):
         #             self._lock.locked())
         with self._lock:
             #logger.debug('_send_command - in lock')
-            command = PRIMARE_CMD[variable][VARIABLE]
-            data = PRIMARE_CMD[variable][CMD]
+            command = PRIMARE_CMD[variable][CMD]
+            data = PRIMARE_CMD[variable][VARIABLE]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
