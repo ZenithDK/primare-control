@@ -2,15 +2,14 @@
 
 from __future__ import unicode_literals
 
-import logging
-
 from mopidy import mixer
 
+import logging
 import primare_serial
 import pykka
-import serial
 
 logger = logging.getLogger(__name__)
+
 
 class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
 
@@ -39,26 +38,28 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
     def set_volume(self, volume):
         # Increase or decrease the amplifier volume until it matches the given
         # target volume.
-        logger.debug('Setting volume to %d' % volume)
-        target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
-        if self._primare.volume_set(target_primare_volume):
-            self._volume_cache = target_primare_volume
-            self.trigger_volume_changed(target_primare_volume)
-        return success
+        logger.debug('LASSE Setting volume to %d' % volume)
+        reply = self._primare.volume_set(volume)
+        if (reply == volume):
+            self._volume_cache = volume
+            self.trigger_volume_changed(volume)
+        logger.warning('LASSE :: reply: %d', reply)
+        return self._volume_cache
 
     def get_mute(self):
         return self._mute_cache
 
     def set_mute(self, mute):
-        success = self._primare.mute_se(mute)
+        success = self._primare.mute_set(mute)
+        mute_value = True if success == '01' else False
         if success:
-            self._mute_cache = mute
-            self.trigger_mute_changed(mute)
+            self._mute_cache = mute_value
+            self.trigger_mute_changed(mute_value)
         return success
 
     def _connect_primare(self):
         logger.info('Primare mixer: Connecting through "%s", using input: %s',
-            (self.port, self.source if self.source != None else "<LAST_USED>")
-        self._primare = primare_serial.PrimareTalker(
-            port=self.port,
-            source=self.source)
+                    self.port,
+                    self.source if self.source is not None else "<DEFAULT>")
+        self._primare = primare_serial.PrimareTalker(port=self.port,
+                                                     input_source=self.source)

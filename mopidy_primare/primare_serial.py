@@ -12,9 +12,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-#from mopidy_primare import primare_serial
-#pt = primare_serial.PrimareTalker.start(port="/dev/ttyUSB0", input_source=None).proxy()
-#pt.power_on()
+# from mopidy_primare import primare_serial
+# pt = primare_serial.PrimareTalker.start(port="/dev/ttyUSB0", input_source=None).proxy()
+# pt.power_on()
 
 # Primare documentation on their RS232 protocol writes this:
 #  == Command structure ==
@@ -70,7 +70,7 @@ PRIMARE_CMD = {
     'input_set': ['W', '82YY', '02YY'],
     'input_next': ['W', '0201', '02'],
     'input_prev': ['W', '02FF', '01'],
-    'volume_set': ['W', '83FF', '03FF'],
+    'volume_set': ['W', '83YY', '03YY'],
     'volume_up': ['W', '0301', '03'],
     'volume_down': ['W', '03FF', '03'],
     'balance_adjust': ['W', '04YY', '04'],
@@ -100,7 +100,6 @@ PRIMARE_CMD = {
 # * Read out from serial while using remote to see if replies are sent when
 #   verbose is enabled
 #     -- Replies ARE sent, need another thread to handle input and update status??
-#     -- use this for EOL: http://pyserial.sourceforge.net/shortintro.html (pyserial eol)
 # * Volume starts at 0? Test using ncmpcpp
 # * Better error handling
 # * ASAP: Update to 0.19 API
@@ -147,7 +146,6 @@ class PrimareTalker(pykka.ThreadingActor):
         logger.debug('__init__ was called')
 
     def on_start(self):
-        logger.debug('on_start is called')
         logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
         self._set_device_to_known_state()
@@ -167,26 +165,23 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
-        logger.debug('SET POWER ON')
         self.power_on()
-        logger.debug('SET VERBOSE TRUE')
         self.verbose_set(True)
-        logger.debug('SET INPUT SOURCE')
         if self._input_source is not None:
             self.input_set(self._input_source)
         self.mute_set(False)
         self._volume = self._get_current_volume()
 
     def _print_device_info(self):
-        manufacturer = binascii.unhexlify(self._send_command('manufacturer_get'))
-        model = binascii.unhexlify(self._send_command('modelname_get'))
-        swversion = binascii.unhexlify(self._send_command('swversion_get'))
-        inputname = binascii.unhexlify(self._send_command('inputname_current_get'))
         logger.info("""Connected to:
             Manufacturer:  %s
             Model:         %s
             SW Version:    %s
-            Current input: %s """, manufacturer, model, swversion, inputname)
+            Current input: %s """,
+                    self.manufacturer_get(),
+                    self.modelname_get(),
+                    self.swversion_get(),
+                    self.inputname_current_get())
 
     def _primare_reader(self):
         # The reader will forever do readline, unless _send_command
@@ -205,11 +200,17 @@ class PrimareTalker(pykka.ThreadingActor):
         #     print "_primare_reader - post lock"
 
     def _get_current_volume(self):
-        volume = self.volume_down()
-        if volume is not None:
-            return self.volume_set(volume + 1)
-        else:
-            return None
+        reply = self._send_command('volume_down')
+        if reply:
+            reply = self._send_command('volume_up')
+            if reply:
+                return int(reply, 16)
+
+    def _handle_unsolicited_reply(self):
+        pass
+
+    def _validate_reply(self, variable, actual_reply_hex, option=None):
+        pass
 
     def _send_command(self, variable, option=None):
         #if type(value) == unicode:
@@ -229,15 +230,8 @@ class PrimareTalker(pykka.ThreadingActor):
             self._write(command, data)
             logger.debug('_send_command - after write - data: %s', data)
             reply = self._readline()
-        logger.debug('_send_command - post lock')
-        #logger.debug('HU HEJ - reply: %s' % binascii.hexlify(reply))
+        logger.debug('_send_command - post lock - reply: %s', reply)
         return reply
-
-    def _handle_unsolicited_reply(self):
-        pass
-
-    def _validate_reply(self, variable, actual_reply_hex, option=None):
-        pass
 
     def _write(self, cmd_type, data):
         # We need to replace single DLE (0x10) with double DLE to discern it
@@ -250,17 +244,19 @@ class PrimareTalker(pykka.ThreadingActor):
                 data_safe += pair
         # Convert ascii string to binary
         binary_variable = binascii.unhexlify(data_safe)
-        logger.debug(
-            '_write - cmd_type: "%s", data_safe: "%s"',
-            cmd_type, data_safe)
+        #logger.debug(
+        #    '_write - cmd_type: "%s", data_safe: "%s"',
+        #    cmd_type, data_safe)
 
         if cmd_type == 'W':
             binary_data = BYTE_STX + BYTE_WRITE + binary_variable + BYTE_DLE_ETX
         else:
             binary_data = BYTE_STX + BYTE_READ + binary_variable + BYTE_DLE_ETX
         # Write data to device.
+        logger.debug("LASSE -TEST2 - path: %s", )
         if not self._device.isOpen():
             self._device.open()
+        logger.debug("LASSE -TEST333333")
         self._device.write(binary_data)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
 
@@ -269,33 +265,48 @@ class PrimareTalker(pykka.ThreadingActor):
         # Read line from device.
         if not self._device.isOpen():
             self._device.open()
-        #eol = binascii.hexlify(BYTE_DLE_ETX)
-        #result = self._device.readline(eol)
-        reply = self._device.readline()
 
-        if reply:
-            logger.debug('Read: "%s"', binascii.hexlify(reply))
-            reply_string = struct.unpack('c' * len(reply), reply)
+        eol = binascii.hexlify(BYTE_DLE_ETX)
+        # Modified version of pySerial's readline
+        leneol = len(eol)
 
-            # We need to replace single DLE (0x10) with double DLE to discern it
-            for byte_pairs in zip(reply_string[0:None:2], reply_string[1:None:2]):
+        bytes_read = bytearray()
+        while True:
+            c = self._device.read(1)
+            if c:
+                bytes_read += c
+                if bytes_read[-leneol:] == eol:
+                    break
+            else:
+                break
+        # End of 'Modified version of pySerial's readline'
+        if bytes_read:
+            logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
+            reply_string = struct.unpack('c' * len(bytes_read), bytes_read)
+            reply_string = reply_string[POS_REPLY_DATA]
+
+            # We need to replace single DLE (0x10) with double
+            # DLE to discern it
+            for byte_pairs in zip(reply_string[0:None:2],
+                                  reply_string[1:None:2]):
                 # Convert binary tuple to str to ascii
                 str_pairs = binascii.hexlify(''.join(byte_pairs))
                 if str_pairs == '1010':
                     result += '10'
                 else:
                     result += str_pairs
+            # Very often we have an odd amount of data which not handled by
+            # the zip above, manually append that
             if len(reply_string) % 2 != 0:
-                result += binascii.hexlify(reply_string[len(reply_string) - 1])
-            reply = result[POS_REPLY_DATA]
+                result += binascii.hexlify(reply_string[-1])
         else:
             logger.debug('Read(0): "%s" - len: %d',
-                         binascii.hexlify(reply), len(reply))
+                         bytes_read, len(bytes_read))
         return result
 
     # Public methods
     def power_on(self):
-        print "POWER ON"
+        print 'POWER ON'
         self._send_command('power_on')
 
     def power_off(self):
@@ -319,13 +330,24 @@ class PrimareTalker(pykka.ThreadingActor):
         return self._volume
 
     def volume_set(self, volume):
-        pass
+        target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
+        logger.debug("LASSE - target volume: %d", target_primare_volume)
+        reply = self._send_command('volume_set', '%02X' % target_primare_volume)
+        if reply:
+            self._volume = int(reply, 16)
+        return self._volume
 
     def volume_up(self):
-        pass
+        reply = self._send_command('volume_up')
+        if reply:
+            self._volume = int(reply, 16)
+        return self._volume
 
     def volume_down(self):
-        pass
+        reply = self._send_command('volume_down')
+        if reply:
+            self._volume = int(reply, 16)
+        return self._volume
 
     def balance_adjust(self, adjustment):
         pass
@@ -334,10 +356,13 @@ class PrimareTalker(pykka.ThreadingActor):
         pass
 
     def mute_toggle(self):
-        pass
+        reply = self._send_command('mute_toggle')
+        return True if reply == '01' else False
 
     def mute_set(self, mute):
-        pass
+        mute_value = '01' if mute is True else '00'
+        reply = self._send_command('mute_set', mute_value)
+        return True if reply == '01' else False
 
     def dim_cycle(self):
         pass
@@ -373,16 +398,18 @@ class PrimareTalker(pykka.ThreadingActor):
         pass
 
     def manufacturer_get(self):
-        pass
+        return binascii.unhexlify(
+            self._send_command('manufacturer_get'))
 
     def modelname_get(self):
-        pass
+        return binascii.unhexlify(self._send_command('modelname_get'))
 
     def swversion_get(self):
-        pass
+        return binascii.unhexlify(self._send_command('swversion_get'))
 
     def inputname_current_get(self):
-        pass
+        return binascii.unhexlify(self._send_command('inputname_current_get'))
 
     def inputname_specific_get(self, input):
-        pass
+        if input >= 0 and input <= 7:
+            return binascii.unhexlify(self._send_command('inputname_specific_get', '%02d' % input))

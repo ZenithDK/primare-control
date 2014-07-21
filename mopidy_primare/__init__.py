@@ -2,11 +2,6 @@ from __future__ import unicode_literals
 
 import os
 
-import pygst
-pygst.require('0.10')
-import gst
-import gobject
-
 from mopidy import config, ext
 
 
@@ -22,7 +17,13 @@ class Extension(ext.Extension):
         conf_file = os.path.join(os.path.dirname(__file__), 'ext.conf')
         return config.read(conf_file)
 
+    def get_config_schema(self):
+        schema = super(Extension, self).get_config_schema()
+        schema['port'] = config.String()
+        schema['source'] = config.String(optional=True)
+        return schema
+
     def setup(self, registry):
-        from .mixer import PrimareMixer
-        gobject.type_register(PrimareMixer)
-        gst.element_register(PrimareMixer, 'primaremixer', gst.RANK_MARGINAL)
+        from mopidy_primare.mixer import PrimareMixer
+
+        registry.add('mixer', PrimareMixer)
