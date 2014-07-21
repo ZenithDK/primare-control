@@ -249,10 +249,9 @@ class PrimareTalker(pykka.ThreadingActor):
             else:
                 data_safe += pair
         # Convert ascii string to binary
-        binary_cmd = binascii.unhexlify(cmd_type)
         binary_variable = binascii.unhexlify(data_safe)
         if cmd_type == 'W':
-            binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
+            binary_data = BYTE_STX + BYTE_WRITE + binary_variable + BYTE_DLE_ETX
         else:
             binary_data = BYTE_STX + BYTE_READ + binary_variable + BYTE_DLE_ETX
         # Write data to device.
