@@ -178,10 +178,10 @@ class PrimareTalker(pykka.ThreadingActor):
         self._volume = self._get_current_volume()
 
     def _print_device_info(self):
-        manufacturer = self._send_command('manufacturer_get')
-        model = self._send_command('modelname_get')
-        swversion = self._send_command('swversion_get')
-        inputname = self._send_command('inputname_current_get')
+        manufacturer = binascii.unhexlify(self._send_command('manufacturer_get'))
+        model = binascii.unhexlify(self._send_command('modelname_get'))
+        swversion = binascii.unhexlify(self._send_command('swversion_get'))
+        inputname = binascii.unhexlify(self._send_command('inputname_current_get'))
         logger.info("""Connected to:
             Manufacturer:  %s
             Model:         %s
