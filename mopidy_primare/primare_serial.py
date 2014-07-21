@@ -223,9 +223,9 @@ class PrimareTalker(pykka.ThreadingActor):
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
-            #logger.debug(
-            #    '_send_command - before write - data: "%s", option: "%s"',
-            #    data, option)
+            logger.debug(
+                '_send_command - before write - cmd: "%s", data: "%s", option: "%s"',
+                command, data, option)
             self._write(command, data)
             logger.debug('_send_command - after write - data: %s', data)
             reply = self._readline()
