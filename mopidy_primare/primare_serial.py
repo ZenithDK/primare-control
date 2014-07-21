@@ -265,30 +265,32 @@ class PrimareTalker(pykka.ThreadingActor):
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
 
     def _readline(self):
+        result = ''
         # Read line from device.
         if not self._device.isOpen():
             self._device.open()
         #eol = binascii.hexlify(BYTE_DLE_ETX)
         #result = self._device.readline(eol)
-        result = self._device.readline()
+        reply = self._device.readline()
 
-        if result:
-            logger.debug('Read: "%s"', binascii.hexlify(result))
-            reply_string = struct.unpack('c' * len(result), result)
+        if reply:
+            logger.debug('Read: "%s"', binascii.hexlify(reply))
+            reply_string = struct.unpack('c' * len(reply), reply)
 
             # We need to replace single DLE (0x10) with double DLE to discern it
-            data_safe = ''
-            for index in xrange(0, len(reply_string) - 1, 2):
-                pair = reply_string[index:index + 2]
-                if pair == '10':
-                    data_safe += '1010'
+            for byte_pairs in zip(reply_string[0:None:2], reply_string[1:None:2]):
+                # Convert binary tuple to str to ascii
+                str_pairs = binascii.hexlify(''.join(byte_pairs))
+                if str_pairs == '1010':
+                    result += '10'
                 else:
-                    data_safe += pair
-
-            result = ''.join(data_safe[POS_REPLY_DATA])
+                    result += str_pairs
+            if len(reply_string) % 2 != 0:
+                result += binascii.hexlify(reply_string[len(reply_string) - 1])
+            reply = result[POS_REPLY_DATA]
         else:
             logger.debug('Read(0): "%s" - len: %d',
-                         binascii.hexlify(result), len(result))
+                         binascii.hexlify(reply), len(reply))
         return result
 
     # Public methods
