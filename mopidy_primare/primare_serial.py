@@ -65,7 +65,7 @@ PRIMARE_CMD = {
     'power_toggle': ['0100', '01'],
     'power_on': ['8101', '0101'],
     'power_off': ['8100', '0100'],
-    'ir_input_set': ['02YY', '02YY'],
+    'input_set': ['82YY', '02YY'],
     'input_next': ['0201', '02'],
     'input_prev': ['02FF', '01'],
     'volume_set': ['83FF', '03FF'],
@@ -106,6 +106,7 @@ PRIMARE_CMD = {
 
 
 class PrimareTalker(pykka.ThreadingActor):
+
     """
     Independent thread which does the communication with the Primare amplifier.
 
@@ -141,19 +142,18 @@ class PrimareTalker(pykka.ThreadingActor):
 
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = None
-        print '__init__ was called'
+        logger.debug('__init__ was called')
 
     def on_start(self):
-        print 'on_start is called'
-        logging.basicConfig()
+        logger.debug('on_start is called')
+        logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
-        self._print_device_info()
         self._set_device_to_known_state()
+        self._print_device_info()
         self._primare_reader()
 
     # Private methods
     def _open_connection(self):
-        print 'Primare amplifier: Connecting through "%s"' % self._port
         logger.info('Primare amplifier: Connecting through "%s"', self._port)
         self._device = serial.Serial(
             port=self._port,
@@ -164,9 +164,14 @@ class PrimareTalker(pykka.ThreadingActor):
             timeout=self.TIMEOUT)
 
     def _set_device_to_known_state(self):
-        self.verbose_set(True)
+        logger.debug('_set_device_to_known_state')
+        logger.debug('SET POWER ON')
         self.power_on()
-        self.input_set(self._input_source)
+        logger.debug('SET VERBOSE TRUE')
+        self.verbose_set(True)
+        logger.debug('SET INPUT SOURCE')
+        if self._input_source is not None:
+            self.input_set(self._input_source)
         self.mute_set(False)
         self._volume = self._get_current_volume()
 
@@ -175,13 +180,6 @@ class PrimareTalker(pykka.ThreadingActor):
         model = self._send_command('modelname_get')
         swversion = self._send_command('swversion_get')
         inputname = self._send_command('inputname_current_get')
-
-        print """Connected to:
-            Manufacturer:  %s
-            Model:         %s
-            SW Version:    %s
-            Current input: %s """, manufacturer, model, swversion, inputname
-
         logger.info("""Connected to:
             Manufacturer:  %s
             Model:         %s
@@ -192,7 +190,7 @@ class PrimareTalker(pykka.ThreadingActor):
         # The reader will forever do readline, unless _send_command
         # takes the lock to send a command and get a reply
         time.sleep(5)
-        print "_primare_reader - starting"
+        logger.debug('_primare_reader - starting')
         # while(True):
         #     print "_primare_reader - pre lock"
         #     with self._lock:
@@ -206,23 +204,27 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def _get_current_volume(self):
         volume = self.volume_down()
-        return self.volume_set(volume + 1)
+        if volume is not None:
+            return self.volume_set(volume + 1)
+        else:
+            return None
 
     def _send_command(self, cmd, option=None):
         #if type(value) == unicode:
         #    value = value.encode('utf-8')
-        print "_send_command - pre lock"
-        print "_send_command - pre lock - lock.locked: %s" % self._lock.locked()
+        logger.debug('_send_command - pre lock - lock.locked: %s', self._lock.locked())
         with self._lock:
-            print "_send_command - in lock"
-            cmd = PRIMARE_CMD['power_on'][CMD]
+            logger.debug('_send_command - in lock')
+            cmd = PRIMARE_CMD[cmd][CMD]
             if option is not None:
+                logger.debug('_send_command - replace YY with "%s"', option)
                 cmd = cmd.replace('YY', option)
+            logger.debug('_send_command - before write - cmd: "%s", option: "%s"', cmd, option)
             self._write(cmd)
-            print "_send_command - after write"
+            logger.debug('_send_command - after write - cmd: %s', cmd)
             reply = self._readline()
-            print "HU HEJ - reply: %s" % binascii.hexlify(reply)
-        print "_send_command - post lock"
+            logger.debug('HU HEJ - reply: %s' % binascii.hexlify(reply))
+        logger.debug('_send_command - post lock')
 
     def _handle_unsolicited_reply(self):
         pass
@@ -231,31 +233,40 @@ class PrimareTalker(pykka.ThreadingActor):
         pass
 
     def _write(self, data):
+        # We need to replace single DLE (0x10) with double DLE to discern it
+        data_safe = ''
+        for index in xrange(0, len(data) - 1, 2):
+            pair = data[index:index+2]
+            if pair == '10':
+                data_safe += '1010'
+            else:
+                data_safe += pair
+        # Convert ascii string to binary
+        binary_cmd = binascii.unhexlify(data_safe)
+        binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
         # Write data to device.
         if not self._device.isOpen():
             self._device.open()
-        # We need to replace single DLE (0x10) with double DLE to discern it
-        data = data.replace('10', '1010')
-        # Convert ascii string to binary
-        binary_cmd = binascii.unhexlify(data)
-        binary_data = BYTE_STX + BYTE_WRITE + binary_cmd + BYTE_DLE_ETX
         self._device.write(binary_data)
-        print 'Write: %s' % data
-        logger.debug('Write: %s', data)
+        logger.debug('Write: %s', data_safe)
+        logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
+        logger.debug('WriteHex(len: %d): %s', len(binary_data), binary_data)
 
     def _readline(self):
         # Read line from device.
         if not self._device.isOpen():
             self._device.open()
-        eol = binascii.hexlify(BYTE_DLE_ETX)
+        #eol = binascii.hexlify(BYTE_DLE_ETX)
         #result = self._device.readline(eol)
         result = self._device.readline()
-        print 'Read: %s' % binascii.hexlify(result)  # if result else "")
-        logger.debug('Read: %s', binascii.hexlify(result))  # if result else "")
+
         if result:
+            logger.debug('Read: "%s"', binascii.hexlify(result))
             reply_string = struct.unpack('c' * len(result), result)
             # reply_string = reply_string.replace('1010', '10') # TODO: How to do this?
             result = ''.join(reply_string[POS_REPLY_DATA])
+        else:
+            logger.debug('Read(0): "%s" - len: %d' % (binascii.hexlify(result), len(result)))
         return result
 
     # Public methods
@@ -264,12 +275,14 @@ class PrimareTalker(pykka.ThreadingActor):
         self._send_command('power_on')
 
     def power_off(self):
+        print "POWER OFF"
         self._send_command('power_off')
 
     def power_toggle(self):
         pass
 
     def input_set(self, input_source):
+        print "INPUT SET"
         self._send_command('input_set', input_source)
 
     def input_next(self):
@@ -312,7 +325,10 @@ class PrimareTalker(pykka.ThreadingActor):
         pass
 
     def verbose_set(self, verbose):
-        pass
+        if verbose:
+            self._send_command('verbose_set', '01')
+        else:
+            self._send_command('verbose_set', '00')
 
     def menu_toggle(self, verbose):
         pass
