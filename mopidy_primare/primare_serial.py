@@ -162,6 +162,8 @@ class PrimareTalker(pykka.ThreadingActor):
             parity=self.PARITY,
             stopbits=self.STOPBITS,
             timeout=self.TIMEOUT)
+        if self._device is None:
+            logger.error("AARHHHH")
 
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
@@ -186,7 +188,7 @@ class PrimareTalker(pykka.ThreadingActor):
     def _primare_reader(self):
         # The reader will forever do readline, unless _send_command
         # takes the lock to send a command and get a reply
-        time.sleep(5)
+        #time.sleep(5)
         logger.debug('_primare_reader - starting')
         # while(True):
         #     print "_primare_reader - pre lock"
@@ -244,19 +246,17 @@ class PrimareTalker(pykka.ThreadingActor):
                 data_safe += pair
         # Convert ascii string to binary
         binary_variable = binascii.unhexlify(data_safe)
-        #logger.debug(
-        #    '_write - cmd_type: "%s", data_safe: "%s"',
-        #    cmd_type, data_safe)
+        logger.debug(
+            '_write - cmd_type: "%s", data_safe: "%s"',
+            cmd_type, data_safe)
 
         if cmd_type == 'W':
             binary_data = BYTE_STX + BYTE_WRITE + binary_variable + BYTE_DLE_ETX
         else:
             binary_data = BYTE_STX + BYTE_READ + binary_variable + BYTE_DLE_ETX
         # Write data to device.
-        logger.debug("LASSE -TEST2 - path: %s", )
         if not self._device.isOpen():
             self._device.open()
-        logger.debug("LASSE -TEST333333")
         self._device.write(binary_data)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
 
@@ -306,19 +306,16 @@ class PrimareTalker(pykka.ThreadingActor):
 
     # Public methods
     def power_on(self):
-        print 'POWER ON'
         self._send_command('power_on')
 
     def power_off(self):
-        print "POWER OFF"
         self._send_command('power_off')
 
     def power_toggle(self):
         pass
 
     def input_set(self, input_source):
-        print "INPUT SET"
-        self._send_command('input_set', input_source)
+        self._send_command('input_set', '%02X' % int(input_source))
 
     def input_next(self):
         pass
@@ -333,21 +330,23 @@ class PrimareTalker(pykka.ThreadingActor):
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
         logger.debug("LASSE - target volume: %d", target_primare_volume)
         reply = self._send_command('volume_set', '%02X' % target_primare_volume)
-        if reply:
+        if reply and int(reply, 16) == target_primare_volume:
             self._volume = int(reply, 16)
-        return self._volume
+            return True
+        else:
+            return False
 
     def volume_up(self):
         reply = self._send_command('volume_up')
         if reply:
             self._volume = int(reply, 16)
-        return self._volume
+        return self._volume.get()
 
     def volume_down(self):
         reply = self._send_command('volume_down')
         if reply:
             self._volume = int(reply, 16)
-        return self._volume
+        return self._volume.get()
 
     def balance_adjust(self, adjustment):
         pass

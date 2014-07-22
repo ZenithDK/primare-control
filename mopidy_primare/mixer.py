@@ -38,28 +38,27 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
     def set_volume(self, volume):
         # Increase or decrease the amplifier volume until it matches the given
         # target volume.
-        logger.debug('LASSE Setting volume to %d' % volume)
-        reply = self._primare.volume_set(volume)
-        if (reply == volume):
+        logger.debug('Setting volume to %d' % volume)
+        success = self._primare.volume_set(volume)
+        if success:
             self._volume_cache = volume
             self.trigger_volume_changed(volume)
-        logger.warning('LASSE :: reply: %d', reply)
-        return self._volume_cache
+        return success
 
     def get_mute(self):
         return self._mute_cache
 
     def set_mute(self, mute):
         success = self._primare.mute_set(mute)
-        mute_value = True if success == '01' else False
         if success:
-            self._mute_cache = mute_value
-            self.trigger_mute_changed(mute_value)
+            self._mute_cache = mute
+            self.trigger_mute_changed(mute)
         return success
 
     def _connect_primare(self):
         logger.info('Primare mixer: Connecting through "%s", using input: %s',
                     self.port,
                     self.source if self.source is not None else "<DEFAULT>")
-        self._primare = primare_serial.PrimareTalker(port=self.port,
-                                                     input_source=self.source)
+        self._primare = primare_serial.PrimareTalker.start(
+            port=self.port, input_source=self.source
+            ).proxy()
