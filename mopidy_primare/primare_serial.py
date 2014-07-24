@@ -149,7 +149,7 @@ class PrimareTalker(pykka.ThreadingActor):
         self._open_connection()
         self._set_device_to_known_state()
         self._print_device_info()
-        #self._primare_reader()
+        self._primare_reader()
 
     # Private methods
     def _open_connection(self):
