@@ -21,37 +21,61 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         self.port = config['primare']['port']
         self.source = config['primare']['source'] or None
 
-        self._volume_cache = 0
-        self._mute_cache = False
-
         self._primare = None
-
-        # Volume in range 0..VOLUME_LEVELS, None before calibration.
-        self._primare_volume = None
 
     def on_start(self):
         self._connect_primare()
 
     def get_volume(self):
-        return self._volume_cache
+        """
+        Get volume level of the mixer on a linear scale from 0 to 100.
+
+        Example values:
+
+        0:
+        Minimum volume, usually silent.
+        100:
+        Maximum volume.
+        :class:`None`:
+        Volume is unknown.
+
+        :rtype: int in range [0..100] or :class:`None`
+        """
+        return self._primare.volume_get().get()
 
     def set_volume(self, volume):
-        # Increase or decrease the amplifier volume until it matches the given
-        # target volume.
+        """
+        Set volume level of the mixer.
+
+        :param volume: Volume in the range [0..100]
+        :type volume: int
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
         logger.debug('Setting volume to %d' % volume)
-        success = self._primare.volume_set(volume)
+        success = self._primare.volume_set(volume).get()
         if success:
-            self._volume_cache = volume
             self.trigger_volume_changed(volume)
         return success
 
     def get_mute(self):
-        return self._mute_cache
+        """
+        Get mute state of the mixer.
+
+        :rtype: :class:`True` if muted, :class:`False` if unmuted,
+        :class:`None` if unknown.
+        """
+        return self._primare.mute_get().get()
 
     def set_mute(self, mute):
-        success = self._primare.mute_set(mute)
+        """
+        Mute or unmute the mixer.
+
+        :param mute: :class:`True` to mute, :class:`False` to unmute
+        :type mute: bool
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
+        success = self._primare.mute_set(mute).get()
         if success:
-            self._mute_cache = mute
             self.trigger_mute_changed(mute)
         return success
 

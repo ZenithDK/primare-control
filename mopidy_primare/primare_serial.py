@@ -1,14 +1,14 @@
 
 from __future__ import with_statement
 
+from mopidy import exceptions
+
 import binascii
 import logging
 import pykka
 import serial
 import struct
 import threading
-
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,7 @@ class PrimareTalker(pykka.ThreadingActor):
     Independent thread which does the communication with the Primare amplifier.
 
     Since the communication is done in an independent thread, Mopidy won't
-    block other requests while doing rather time consuming work like
-    calibrating the Primare amplifier's volume.
+    block other requests while doing time consuming work.
     """
 
     # Serial link config
@@ -138,19 +137,19 @@ class PrimareTalker(pykka.ThreadingActor):
 
         self._port = port
         self._input_source = input_source
+        self._mute_state = False
         self._device = None
         self._lock = threading.Lock()
 
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = None
-        logger.debug('__init__ was called')
 
     def on_start(self):
         logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
         self._set_device_to_known_state()
         self._print_device_info()
-        self._primare_reader()
+        #self._primare_reader()
 
     # Private methods
     def _open_connection(self):
@@ -163,7 +162,8 @@ class PrimareTalker(pykka.ThreadingActor):
             stopbits=self.STOPBITS,
             timeout=self.TIMEOUT)
         if self._device is None:
-            logger.error("AARHHHH")
+            raise exceptions.MixerError("Failed to start serial " +
+                                        "connection to amplifier")
 
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
@@ -190,16 +190,16 @@ class PrimareTalker(pykka.ThreadingActor):
         # takes the lock to send a command and get a reply
         #time.sleep(5)
         logger.debug('_primare_reader - starting')
-        # while(True):
-        #     print "_primare_reader - pre lock"
-        #     with self._lock:
-        #         print "_primare_reader - in lock"
-        #         logger.debug("_primare_reader running")
-        #         reply = self._readline()
-        #         print "_primare_reader - readline"
-        #         if reply != "":
-        #             self._handle_unsolicited_reply()
-        #     print "_primare_reader - post lock"
+        while(True):
+            print "_primare_reader - pre lock"
+            with self._lock:
+                print "_primare_reader - in lock"
+                logger.debug("_primare_reader running")
+                variable, reply = self._readline()
+                print "_primare_reader - readline, var: '%s' - data: '%s'" % (variable, reply)
+                if reply != "":
+                    self._handle_unsolicited_reply(reply)
+            print "_primare_reader - post lock"
 
     def _get_current_volume(self):
         reply = self._send_command('volume_down')
@@ -207,38 +207,70 @@ class PrimareTalker(pykka.ThreadingActor):
             reply = self._send_command('volume_up')
             if reply:
                 return int(reply, 16)
+        return 0
 
-    def _handle_unsolicited_reply(self):
-        pass
+    def _handle_unsolicited_reply(self, variable, reply):
+        if variable == "01":  # power
+            logger.debug("power")
+        elif variable == "02":  # input
+            logger.debug("input")
+        elif variable == "03":  # volume
+            logger.debug("volume")
+            self._volume = int(reply, 16)
+        elif variable == "04":  # balance
+            logger.debug("balance")
+        elif variable == "09":  # mute
+            logger.debug("mute")
+        elif variable == "0A":  # dim
+            logger.debug("dim")
+        elif variable == "0D":  # verbose
+            logger.debug("verbose")
+        elif variable == "0E":  # menu
+            logger.debug("menu")
+        elif variable == "12":  # ir input
+            logger.debug("ir input")
 
     def _validate_reply(self, variable, actual_reply_hex, option=None):
         pass
 
     def _send_command(self, variable, option=None):
-        #if type(value) == unicode:
-        #    value = value.encode('utf-8')
-        #logger.debug('_send_command - pre lock - lock.locked: %s',
-        #             self._lock.locked())
+        """Send the specified command to the amplifier
+
+        :param variable: String key for the PRIMARE_CMD dict
+        :type variable: string
+        :param option: String value needed for some of the commands
+        :type option: string
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
+        reply_data = ''
+        logger.debug('_send_command - pre lock - lock.locked: %s',
+                     self._lock.locked())
         with self._lock:
-            #logger.debug('_send_command - in lock')
+            logger.debug('_send_command - in lock')
             command = PRIMARE_CMD[variable][CMD]
             data = PRIMARE_CMD[variable][VARIABLE]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
             logger.debug(
-                '_send_command - before write - cmd: "%s", data: "%s", option: "%s"',
+                '_send_command - before write - cmd: "%s", ' +
+                'data: "%s", option: "%s"',
                 command, data, option)
             self._write(command, data)
             logger.debug('_send_command - after write - data: %s', data)
-            reply = self._readline()
-        logger.debug('_send_command - post lock - reply: %s', reply)
-        return reply
+            reply_var, reply_data = self._readline()
+        logger.debug('_send_command - post lock - reply_data: %s', reply_data)
+        return reply_data
 
     def _write(self, cmd_type, data):
+        """Write data to the serial port
+
+        Any occurences of '\x10' must be replaced with '\x10\x10' and add
+        the STX and DLE+ETX markers
+        """
         # We need to replace single DLE (0x10) with double DLE to discern it
         data_safe = ''
-        for index in xrange(0, len(data) - 1, 2):
+        for index in range(0, len(data) - 1, 2):
             pair = data[index:index + 2]
             if pair == '10':
                 data_safe += '1010'
@@ -251,9 +283,11 @@ class PrimareTalker(pykka.ThreadingActor):
             cmd_type, data_safe)
 
         if cmd_type == 'W':
-            binary_data = BYTE_STX + BYTE_WRITE + binary_variable + BYTE_DLE_ETX
+            binary_data = (BYTE_STX + BYTE_WRITE +
+                           binary_variable + BYTE_DLE_ETX)
         else:
-            binary_data = BYTE_STX + BYTE_READ + binary_variable + BYTE_DLE_ETX
+            binary_data = (BYTE_STX + BYTE_READ +
+                           binary_variable + BYTE_DLE_ETX)
         # Write data to device.
         if not self._device.isOpen():
             self._device.open()
@@ -261,7 +295,15 @@ class PrimareTalker(pykka.ThreadingActor):
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
 
     def _readline(self):
+        """Read data from the serial port
+
+        Uses a modified version of pySerial's readline as EOL is '\x10\x03'
+        Also replace any '\x10\x10' sequences with '\x10'.
+        Returns the data received between the STX and DLE+ETX markers
+        """
+        variable_char = ''
         result = ''
+
         # Read line from device.
         if not self._device.isOpen():
             self._device.open()
@@ -283,10 +325,10 @@ class PrimareTalker(pykka.ThreadingActor):
         if bytes_read:
             logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
             reply_string = struct.unpack('c' * len(bytes_read), bytes_read)
+            variable_char =  binascii.hexlify(''.join(reply_string[POS_REPLY_VAR]))
             reply_string = reply_string[POS_REPLY_DATA]
 
-            # We need to replace single DLE (0x10) with double
-            # DLE to discern it
+            # We need to replace double DLE (0x10) with single DLE
             for byte_pairs in zip(reply_string[0:None:2],
                                   reply_string[1:None:2]):
                 # Convert binary tuple to str to ascii
@@ -302,20 +344,39 @@ class PrimareTalker(pykka.ThreadingActor):
         else:
             logger.debug('Read(0): "%s" - len: %d',
                          bytes_read, len(bytes_read))
-        return result
+        return variable_char, result
 
     # Public methods
     def power_on(self):
+        """Power on the Primare amplifier."""
         self._send_command('power_on')
 
     def power_off(self):
+        """Power off the Primare amplifier."""
         self._send_command('power_off')
 
     def power_toggle(self):
-        pass
+        """Toggle the power to the Primare amplifier.
+
+        :rtype: :class:True if amplifier turned on as result of toggle,
+          :class:False otherwise
+        """
+        reply = self._send_command('power_toggle')
+        if reply and reply == '01':
+            return True
+        else:
+            return False
 
     def input_set(self, input_source):
-        self._send_command('input_set', '%02X' % int(input_source))
+        """Set the current input used by the Primare amplifier.
+
+        :rtype: name of current input if success, empty string if failure
+        """
+        reply = self._send_command('input_set', '%02X' % int(input_source))
+        if reply:
+            return self.inputname_current_get()
+        else:
+            return ""
 
     def input_next(self):
         pass
@@ -324,12 +385,34 @@ class PrimareTalker(pykka.ThreadingActor):
         pass
 
     def volume_get(self):
+        """
+        Get volume level of the mixer on a linear scale from 0 to 100.
+
+        Example values:
+
+        0:
+        Silent
+        100:
+        Maximum volume.
+        :class:`None`:
+        Volume is unknown.
+
+        :rtype: int in range [0..100] or :class:`None`
+        """
         return self._volume
 
     def volume_set(self, volume):
+        """
+        Set volume level of the amplifier.
+
+        :param volume: Volume in the range [0..100]
+        :type volume: int
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
         logger.debug("LASSE - target volume: %d", target_primare_volume)
-        reply = self._send_command('volume_set', '%02X' % target_primare_volume)
+        reply = self._send_command('volume_set',
+                                   '%02X' % target_primare_volume)
         if reply and int(reply, 16) == target_primare_volume:
             self._volume = int(reply, 16)
             return True
@@ -356,12 +439,38 @@ class PrimareTalker(pykka.ThreadingActor):
 
     def mute_toggle(self):
         reply = self._send_command('mute_toggle')
-        return True if reply == '01' else False
+        if reply == '01':
+            self._mute_state = True
+            return True
+        else:
+            self._mute_state = False
+            return False
+
+    def mute_get(self):
+        """
+        Get mute state of the mixer.
+
+        :rtype: :class:`True` if muted, :class:`False` if unmuted,
+        :class:`None` if unknown.
+        """
+        return self._mute_state
 
     def mute_set(self, mute):
+        """
+        Mute or unmute the amplifier.
+
+        :param mute: :class:`True` to mute, :class:`False` to unmute
+        :type mute: bool
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
         mute_value = '01' if mute is True else '00'
         reply = self._send_command('mute_set', mute_value)
-        return True if reply == '01' else False
+        if reply == '01':
+            self._mute_state = True
+            return True
+        else:
+            self._mute_state = False
+            return False
 
     def dim_cycle(self):
         pass
