@@ -59,50 +59,49 @@ BYTE_WRITE = '\x57'
 BYTE_READ = '\x52'
 BYTE_DLE_ETX = '\x10\x03'
 
-CMD = 0
-VARIABLE = 1
-REPLY = 2
+INDEX_CMD = 0
+INDEX_VARIABLE = 1
+INDEX_REPLY = 2
+INDEX_WAIT = 3
 
 PRIMARE_CMD = {
-    'power_toggle': ['W', '0100', '01'],
-    'power_on': ['W', '8101', '0101'],
-    'power_off': ['W', '8100', '0100'],
-    'input_set': ['W', '82YY', '02YY'],
-    'input_next': ['W', '0201', '02'],
-    'input_prev': ['W', '02FF', '01'],
-    'volume_set': ['W', '83YY', '03YY'],
-    'volume_up': ['W', '0301', '03'],
-    'volume_down': ['W', '03FF', '03'],
-    'balance_adjust': ['W', '04YY', '04'],
-    'balance_set': ['W', '84YY', '04YY'],
-    'mute_toggle': ['W', '0900', '09'],
-    'mute_set': ['W', '89YY', '09YY'],
-    'dim_cycle': ['W', '0A00', '0A'],
-    'dim_set': ['W', '0AYY', '8AYY'],
-    'verbose_toggle': ['W', '0D00', '0D'],
-    'verbose_set': ['W', '8DYY', '0DYY'],
-    'menu_toggle': ['W', '0E01', '0E'],
-    'menu_set': ['W', '8EYY', '0EYY'],
-    'remote_cmd': ['W', '0FYY', 'YY'],
-    'ir_input_toggle': ['W', '1200', '12'],
-    'ir_input_set': ['W', '92YY', '12YY'],
-    'recall_factory_settings': ['R', '1300', ''],
-    'inputname_current_get': ['R', '1400', '14YY'],
-    'inputname_specific_get': ['R', '94YY', '94YY'],
-    'manufacturer_get': ['R', '1500', '15'],
-    'modelname_get': ['R', '1600', '16'],
-    'swversion_get': ['R', '1700', '17']
+    'power_toggle': ['W', '0100', '01', True],
+    'power_on': ['W', '8101', '0101', False],
+    'power_off': ['W', '8100', '0100', False],
+    'input_set': ['W', '82YY', '02YY', True],
+    'input_next': ['W', '0201', '02', True],
+    'input_prev': ['W', '02FF', '01', True],
+    'volume_set': ['W', '83YY', '03YY', True],
+    'volume_up': ['W', '0301', '03', True],
+    'volume_down': ['W', '03FF', '03', True],
+    'balance_adjust': ['W', '04YY', '04', True],
+    'balance_set': ['W', '84YY', '04YY', True],
+    'mute_toggle': ['W', '0900', '09', True],
+    'mute_set': ['W', '89YY', '09YY', True],
+    'dim_cycle': ['W', '0A00', '0A', True],
+    'dim_set': ['W', '0AYY', '8AYY', True],
+    'verbose_toggle': ['W', '0D00', '0D', True],
+    'verbose_set': ['W', '8DYY', '0DYY', True],
+    'menu_toggle': ['W', '0E01', '0E', True],
+    'menu_set': ['W', '8EYY', '0EYY', True],
+    'remote_cmd': ['W', '0FYY', 'YY', True],
+    'ir_input_toggle': ['W', '1200', '12', True],
+    'ir_input_set': ['W', '92YY', '12YY', True],
+    'recall_factory_settings': ['R', '1300', '', True],
+    'inputname_current_get': ['R', '1400', '14YY', True],
+    'inputname_specific_get': ['R', '94YY', '94YY', True],
+    'manufacturer_get': ['R', '1500', '15', True],
+    'modelname_get': ['R', '1600', '16', True],
+    'swversion_get': ['R', '1700', '17', True]
 }
 # TODO:
 # * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
 #       incr and decr volume, instead of setting it to arbitrary default value
-#     -- Done, but something is amiss, update to 0.19 first and test again
-# * Read out from serial while using remote to see if replies are sent when
-#   verbose is enabled
-#     -- Replies ARE sent, need another thread to handle input and update status??
-# * Volume starts at 0? Test using ncmpcpp
+#     -- Done, but something is amiss, test again
+# * Volume starts at 0, can't turn up past 17? Test using ncmpcpp
 # * Better error handling
-# * ASAP: Update to 0.19 API
+# * v2: Singleton for multiple writers/subscribers
+# * v2: Add notification callback mechanism to notify users of changes on amp (dials or other SW)
 # * ...
 
 
@@ -135,11 +134,15 @@ class PrimareTalker(pykka.ThreadingActor):
     def __init__(self, port, input_source):
         super(PrimareTalker, self).__init__()
 
+        self._alive = True
         self._port = port
         self._input_source = input_source
         self._mute_state = False
         self._device = None
-        self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._read_event = threading.Event()
+        # Create new dict with same keys as PRIMARE_CMD for the last reply
+        self.event_reply = dict.fromkeys(PRIMARE_CMD)
 
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = None
@@ -147,9 +150,14 @@ class PrimareTalker(pykka.ThreadingActor):
     def on_start(self):
         logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
+
+        logger.debug('on_start - starting thread')
+        self.thread_read = threading.Thread(target=self._primare_reader)
+        self.thread_read.setName('PrimareSerial')
+        self.thread_read.start()
+
         self._set_device_to_known_state()
         self._print_device_info()
-        self._primare_reader()
 
     # Private methods
     def _open_connection(self):
@@ -160,15 +168,16 @@ class PrimareTalker(pykka.ThreadingActor):
             bytesize=self.BYTESIZE,
             parity=self.PARITY,
             stopbits=self.STOPBITS,
-            timeout=self.TIMEOUT)
+            timeout=None)
+            #timeout=self.TIMEOUT)
         if self._device is None:
             raise exceptions.MixerError("Failed to start serial " +
                                         "connection to amplifier")
 
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
-        self.power_on()
         self.verbose_set(True)
+        self.power_on()
         if self._input_source is not None:
             self.input_set(self._input_source)
         self.mute_set(False)
@@ -185,21 +194,99 @@ class PrimareTalker(pykka.ThreadingActor):
                     self.swversion_get(),
                     self.inputname_current_get())
 
+    def stop(self):
+        self._alive = False
+        self._send_command('verbose_toggle')
+
     def _primare_reader(self):
+        """Read data from the serial port
+
+        Uses a modified version of pySerial's readline as EOL is '\x10\x03'
+        Also replace any '\x10\x10' sequences with '\x10'.
+        Returns the data received between the STX and DLE+ETX markers
+        """
         # The reader will forever do readline, unless _send_command
         # takes the lock to send a command and get a reply
-        #time.sleep(5)
+
         logger.debug('_primare_reader - starting')
-        while(True):
-            print "_primare_reader - pre lock"
-            with self._lock:
-                print "_primare_reader - in lock"
-                logger.debug("_primare_reader running")
-                variable, reply = self._readline()
-                print "_primare_reader - readline, var: '%s' - data: '%s'" % (variable, reply)
-                if reply != "":
-                    self._handle_unsolicited_reply(reply)
-            print "_primare_reader - post lock"
+
+        while(self._alive):
+            variable_char = ''
+            data = ''
+            logger.debug('_primare_reader - still alive')
+
+            # Read line from device.
+            if not self._device.isOpen():
+                self._device.open()
+
+            eol = BYTE_DLE_ETX
+            # Modified version of pySerial's readline
+            leneol = len(eol)
+
+            bytes_read = bytearray()
+
+            while True:
+                logger.debug('_primare_reader - pre-read')
+                c = self._device.read(1)
+                logger.debug('_primare_reader - post-read: %s', binascii.hexlify(c))
+                if c:
+                    bytes_read += c
+                    if bytes_read[-leneol:] == eol:
+                        break
+                    else:
+                        logger.debug('_primare_reader - not-eol: %s', binascii.hexlify(bytes_read[-leneol:]))
+
+                else:
+                    break
+            # End of 'Modified version of pySerial's readline'
+            logger.debug('_primare_reader - out of read loop')
+
+            if bytes_read:
+                logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
+                byte_string = struct.unpack('c' * len(bytes_read), bytes_read)
+                variable_char =  binascii.hexlify(''.join(byte_string[POS_REPLY_VAR]))
+                byte_string = byte_string[POS_REPLY_DATA]
+
+                # We need to replace double DLE (0x10) with single DLE
+                for byte_pairs in zip(byte_string[0:None:2],
+                                      byte_string[1:None:2]):
+                    # Convert binary tuple to str to ascii
+                    str_pairs = binascii.hexlify(''.join(byte_pairs))
+                    if str_pairs == '1010':
+                        data += '10'
+                    else:
+                        data += str_pairs
+                # Very often we have an odd amount of data which not handled by
+                # the zip above, manually append that one byte
+                if len(byte_string) % 2 != 0:
+                    data += binascii.hexlify(byte_string[-1])
+
+                # List comprehension magic to extract key corresponding to the command reply
+                logger.debug('_primare_reader - pre-list compr')
+                cmd_index = ''
+                cmd_indices = [cmd for cmd, value in PRIMARE_CMD.iteritems() if value[INDEX_REPLY][0:2] == str.upper(variable_char)]
+                logger.debug('_primare_reader - post-list compr: "%s"', cmd_indices)
+                if cmd_indices:
+                    if len(cmd_indices) > 1:
+                        for cmd_set in cmd_indices:
+                            if 'set' in cmd_set:
+                                logger.debug('_primare_reader - multifind set: "%s"', cmd_set)
+                                cmd_index = cmd_set
+                    else:
+                        logger.debug('_primare_reader - singlefind set: "%s"', cmd_indices)
+                        cmd_index = cmd_indices[0]
+                    logger.debug('_primare_reader - pre-event set: "%s"', cmd_index)
+
+                    self.event_reply[cmd_index] = data
+                    self._read_event.set()
+                    self._read_event.clear()
+                    logger.debug('_primare_reader - post-event set')
+                    # TODO: Wait on event so that _send_command is done and then broadcast to subscribers
+            else:
+                logger.debug('Read(0): "%s" - len: %d',
+                             bytes_read, len(bytes_read))
+
+            print "_primare_reader - readline, var: '%s' - data: '%s'" % (variable_char, data)
 
     def _get_current_volume(self):
         reply = self._send_command('volume_down')
@@ -208,30 +295,6 @@ class PrimareTalker(pykka.ThreadingActor):
             if reply:
                 return int(reply, 16)
         return 0
-
-    def _handle_unsolicited_reply(self, variable, reply):
-        if variable == "01":  # power
-            logger.debug("power")
-        elif variable == "02":  # input
-            logger.debug("input")
-        elif variable == "03":  # volume
-            logger.debug("volume")
-            self._volume = int(reply, 16)
-        elif variable == "04":  # balance
-            logger.debug("balance")
-        elif variable == "09":  # mute
-            logger.debug("mute")
-        elif variable == "0A":  # dim
-            logger.debug("dim")
-        elif variable == "0D":  # verbose
-            logger.debug("verbose")
-        elif variable == "0E":  # menu
-            logger.debug("menu")
-        elif variable == "12":  # ir input
-            logger.debug("ir input")
-
-    def _validate_reply(self, variable, actual_reply_hex, option=None):
-        pass
 
     def _send_command(self, variable, option=None):
         """Send the specified command to the amplifier
@@ -244,11 +307,11 @@ class PrimareTalker(pykka.ThreadingActor):
         """
         reply_data = ''
         logger.debug('_send_command - pre lock - lock.locked: %s',
-                     self._lock.locked())
-        with self._lock:
+                     self._write_lock.locked())
+        with self._write_lock:
             logger.debug('_send_command - in lock')
-            command = PRIMARE_CMD[variable][CMD]
-            data = PRIMARE_CMD[variable][VARIABLE]
+            command = PRIMARE_CMD[variable][INDEX_CMD]
+            data = PRIMARE_CMD[variable][INDEX_VARIABLE]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
@@ -258,7 +321,15 @@ class PrimareTalker(pykka.ThreadingActor):
                 command, data, option)
             self._write(command, data)
             logger.debug('_send_command - after write - data: %s', data)
-            reply_var, reply_data = self._readline()
+            if PRIMARE_CMD[variable][INDEX_WAIT] == True:
+                self._read_event.wait()
+                reply_data = self.event_reply[variable]
+                self.event_reply[variable] = ''
+            else:
+                reply_data = PRIMARE_CMD[variable][INDEX_REPLY]
+            logger.debug('_send_command - after event')
+            self._read_event.set()
+            self._read_event.clear()
         logger.debug('_send_command - post lock - reply_data: %s', reply_data)
         return reply_data
 
@@ -294,57 +365,6 @@ class PrimareTalker(pykka.ThreadingActor):
         self._device.write(binary_data)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
 
-    def _readline(self):
-        """Read data from the serial port
-
-        Uses a modified version of pySerial's readline as EOL is '\x10\x03'
-        Also replace any '\x10\x10' sequences with '\x10'.
-        Returns the data received between the STX and DLE+ETX markers
-        """
-        variable_char = ''
-        result = ''
-
-        # Read line from device.
-        if not self._device.isOpen():
-            self._device.open()
-
-        eol = binascii.hexlify(BYTE_DLE_ETX)
-        # Modified version of pySerial's readline
-        leneol = len(eol)
-
-        bytes_read = bytearray()
-        while True:
-            c = self._device.read(1)
-            if c:
-                bytes_read += c
-                if bytes_read[-leneol:] == eol:
-                    break
-            else:
-                break
-        # End of 'Modified version of pySerial's readline'
-        if bytes_read:
-            logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
-            reply_string = struct.unpack('c' * len(bytes_read), bytes_read)
-            variable_char =  binascii.hexlify(''.join(reply_string[POS_REPLY_VAR]))
-            reply_string = reply_string[POS_REPLY_DATA]
-
-            # We need to replace double DLE (0x10) with single DLE
-            for byte_pairs in zip(reply_string[0:None:2],
-                                  reply_string[1:None:2]):
-                # Convert binary tuple to str to ascii
-                str_pairs = binascii.hexlify(''.join(byte_pairs))
-                if str_pairs == '1010':
-                    result += '10'
-                else:
-                    result += str_pairs
-            # Very often we have an odd amount of data which not handled by
-            # the zip above, manually append that
-            if len(reply_string) % 2 != 0:
-                result += binascii.hexlify(reply_string[-1])
-        else:
-            logger.debug('Read(0): "%s" - len: %d',
-                         bytes_read, len(bytes_read))
-        return variable_char, result
 
     # Public methods
     def power_on(self):

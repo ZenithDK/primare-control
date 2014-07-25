@@ -26,6 +26,9 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
     def on_start(self):
         self._connect_primare()
 
+    def on_stop(self):
+        self._primare.stop()
+
     def get_volume(self):
         """
         Get volume level of the mixer on a linear scale from 0 to 100.
