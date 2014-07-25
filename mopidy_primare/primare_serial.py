@@ -66,11 +66,10 @@ INDEX_WAIT = 3
 
 PRIMARE_CMD = {
     'power_toggle': ['W', '0100', '01', True],
-    'power_on': ['W', '8101', '0101', False],
-    'power_off': ['W', '8100', '0100', False],
+    'power_set': ['W', '81YY', '01YY', False],
     'input_set': ['W', '82YY', '02YY', True],
     'input_next': ['W', '0201', '02', True],
-    'input_prev': ['W', '02FF', '01', True],
+    'input_prev': ['W', '02FF', '02', True],
     'volume_set': ['W', '83YY', '03YY', True],
     'volume_up': ['W', '0301', '03', True],
     'volume_down': ['W', '03FF', '03', True],
@@ -79,7 +78,7 @@ PRIMARE_CMD = {
     'mute_toggle': ['W', '0900', '09', True],
     'mute_set': ['W', '89YY', '09YY', True],
     'dim_cycle': ['W', '0A00', '0A', True],
-    'dim_set': ['W', '0AYY', '8AYY', True],
+    'dim_set': ['W', '0AYY', '0AYY', True],
     'verbose_toggle': ['W', '0D00', '0D', True],
     'verbose_set': ['W', '8DYY', '0DYY', True],
     'menu_toggle': ['W', '0E01', '0E', True],
@@ -87,7 +86,7 @@ PRIMARE_CMD = {
     'remote_cmd': ['W', '0FYY', 'YY', True],
     'ir_input_toggle': ['W', '1200', '12', True],
     'ir_input_set': ['W', '92YY', '12YY', True],
-    'recall_factory_settings': ['R', '1300', '', True],
+    'recall_factory_settings': ['R', '1300', '', False],
     'inputname_current_get': ['R', '1400', '14YY', True],
     'inputname_specific_get': ['R', '94YY', '94YY', True],
     'manufacturer_get': ['R', '1500', '15', True],
@@ -169,7 +168,6 @@ class PrimareTalker(pykka.ThreadingActor):
             parity=self.PARITY,
             stopbits=self.STOPBITS,
             timeout=None)
-            #timeout=self.TIMEOUT)
         if self._device is None:
             raise exceptions.MixerError("Failed to start serial " +
                                         "connection to amplifier")
@@ -194,9 +192,11 @@ class PrimareTalker(pykka.ThreadingActor):
                     self.swversion_get(),
                     self.inputname_current_get())
 
-    def stop(self):
+    def stop_reader(self):
         self._alive = False
         self._send_command('verbose_toggle')
+        self.thread_read.join()
+        logger.info("Primare reader thread finished...exiting")
 
     def _primare_reader(self):
         """Read data from the serial port
@@ -369,11 +369,11 @@ class PrimareTalker(pykka.ThreadingActor):
     # Public methods
     def power_on(self):
         """Power on the Primare amplifier."""
-        self._send_command('power_on')
+        self._send_command('power_set', '01')
 
     def power_off(self):
         """Power off the Primare amplifier."""
-        self._send_command('power_off')
+        self._send_command('power_set', '00')
 
     def power_toggle(self):
         """Toggle the power to the Primare amplifier.

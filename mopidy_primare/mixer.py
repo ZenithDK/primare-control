@@ -27,7 +27,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         self._connect_primare()
 
     def on_stop(self):
-        self._primare.stop()
+        self._primare.stop_reader()
 
     def get_volume(self):
         """
