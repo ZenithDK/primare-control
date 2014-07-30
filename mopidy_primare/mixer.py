@@ -20,6 +20,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
 
         self.port = config['primare']['port']
         self.source = config['primare']['source'] or None
+        # TODO: Support default volume configuration
 
         self._primare = None
 
@@ -54,7 +55,6 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         :type volume: int
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        logger.debug('Setting volume to %d' % volume)
         success = self._primare.volume_set(volume).get()
         if success:
             self.trigger_volume_changed(volume)

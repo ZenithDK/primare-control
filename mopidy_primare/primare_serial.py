@@ -9,6 +9,7 @@ import pykka
 import serial
 import struct
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -93,14 +94,40 @@ PRIMARE_CMD = {
     'modelname_get': ['R', '1600', '16', True],
     'swversion_get': ['R', '1700', '17', True]
 }
+
+PRIMARE_REPLY = {
+    '01': '',  # power'
+    '02': '',  # input'
+    '03': '',  # volume'
+    '04': '',  # balance'
+    '09': '',  # mute'
+    '0A': '',  # dim'
+    '0D': '',  # verbose'
+    '0E': '',  # menu'
+#    'YY': '',  # remote_cmd'
+    '12': '',  # ir_input'
+    '13': '',  # recall_factory_settings'
+    '14': '',  # inputname'
+    '15': '',  # manufacturer'
+    '16': '',  # modelname'
+    '17': ''  # swversion'
+}
 # TODO:
-# * IMPORTANT: Implement vol_up/vol_down so the default volume can be read by
-#       incr and decr volume, instead of setting it to arbitrary default value
-#     -- Done, but something is amiss, test again
-# * Volume starts at 0, can't turn up past 17? Test using ncmpcpp
+# IMPORTANT
+# * After power on we need a delay, otherwise no answer
+# * Better reply handlinng than table?
+# * Remove result validation or use it in PRIMARE_CMD dict
 # * Better error handling
-# * v2: Singleton for multiple writers/subscribers
+#       After suspend/resume, if volume up/down fails (or similar), try turning amp on
+# * Remove pykka dependence, just have PrimareMixer call methods instead, spawn reader thread still
+#
+# LATER
+# * v2: Implement as module(?), not class, for multiple writers/subscribers (singleton)
+#       Seems like a factory would be better, so 'import primare_serial' then primare_serial.initComs()
+#       which then creates the single Serial object.
 # * v2: Add notification callback mechanism to notify users of changes on amp (dials or other SW)
+#       http://bit.ly/WGRn0g
+#       Better idea: websocket - http://forums.lantronix.com/showthread.php?p=3131
 # * ...
 
 
@@ -124,7 +151,7 @@ class PrimareTalker(pykka.ThreadingActor):
     # confirmations and calibration will decrease volume forever. If you set
     # the timeout too high, stuff takes more time. 0.8s seems like a good value
     # for Primare I22.
-    TIMEOUT = 0.8
+    TIMEOUT = 2.0
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
@@ -140,8 +167,6 @@ class PrimareTalker(pykka.ThreadingActor):
         self._device = None
         self._write_lock = threading.Lock()
         self._read_event = threading.Event()
-        # Create new dict with same keys as PRIMARE_CMD for the last reply
-        self.event_reply = dict.fromkeys(PRIMARE_CMD)
 
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = None
@@ -167,7 +192,7 @@ class PrimareTalker(pykka.ThreadingActor):
             bytesize=self.BYTESIZE,
             parity=self.PARITY,
             stopbits=self.STOPBITS,
-            timeout=None)
+            timeout=self.TIMEOUT)
         if self._device is None:
             raise exceptions.MixerError("Failed to start serial " +
                                         "connection to amplifier")
@@ -176,9 +201,11 @@ class PrimareTalker(pykka.ThreadingActor):
         logger.debug('_set_device_to_known_state')
         self.verbose_set(True)
         self.power_on()
+        time.sleep(5)
         if self._input_source is not None:
             self.input_set(self._input_source)
         self.mute_set(False)
+        logger.error('LASSSE - set known state: _get_current_volume!')
         self._volume = self._get_current_volume()
 
     def _print_device_info(self):
@@ -192,11 +219,15 @@ class PrimareTalker(pykka.ThreadingActor):
                     self.swversion_get(),
                     self.inputname_current_get())
 
-    def stop_reader(self):
-        self._alive = False
-        self._send_command('verbose_toggle')
-        self.thread_read.join()
-        logger.info("Primare reader thread finished...exiting")
+    def _get_current_volume(self):
+        reply = self._send_command('volume_down')
+        logger.error('LASSSE _get_current_volume!: down: %s', reply)
+        if reply:
+            reply = self._send_command('volume_up')
+            logger.error('LASSSE _get_current_volume!: up: %s', reply)
+            if reply:
+                return int(reply, 16)
+        return 0
 
     def _primare_reader(self):
         """Read data from the serial port
@@ -261,40 +292,19 @@ class PrimareTalker(pykka.ThreadingActor):
                 if len(byte_string) % 2 != 0:
                     data += binascii.hexlify(byte_string[-1])
 
-                # List comprehension magic to extract key corresponding to the command reply
-                logger.debug('_primare_reader - pre-list compr')
-                cmd_index = ''
-                cmd_indices = [cmd for cmd, value in PRIMARE_CMD.iteritems() if value[INDEX_REPLY][0:2] == str.upper(variable_char)]
-                logger.debug('_primare_reader - post-list compr: "%s"', cmd_indices)
-                if cmd_indices:
-                    if len(cmd_indices) > 1:
-                        for cmd_set in cmd_indices:
-                            if 'set' in cmd_set:
-                                logger.debug('_primare_reader - multifind set: "%s"', cmd_set)
-                                cmd_index = cmd_set
-                    else:
-                        logger.debug('_primare_reader - singlefind set: "%s"', cmd_indices)
-                        cmd_index = cmd_indices[0]
-                    logger.debug('_primare_reader - pre-event set: "%s"', cmd_index)
+                logger.debug('_primare_reader - index: "%s"', str.upper(variable_char))
 
-                    self.event_reply[cmd_index] = data
-                    self._read_event.set()
-                    self._read_event.clear()
-                    logger.debug('_primare_reader - post-event set')
-                    # TODO: Wait on event so that _send_command is done and then broadcast to subscribers
+                PRIMARE_REPLY[str.upper(variable_char)] = data
+                self._read_event.set()
+                self._read_event.clear()
+                logger.debug('_primare_reader - post-event set')
+                # TODO: Wait on event so that _send_command is done and then broadcast to subscribers
+                # But, what then, to do when event received without a command sent? :-)
             else:
                 logger.debug('Read(0): "%s" - len: %d',
                              bytes_read, len(bytes_read))
 
             print "_primare_reader - readline, var: '%s' - data: '%s'" % (variable_char, data)
-
-    def _get_current_volume(self):
-        reply = self._send_command('volume_down')
-        if reply:
-            reply = self._send_command('volume_up')
-            if reply:
-                return int(reply, 16)
-        return 0
 
     def _send_command(self, variable, option=None):
         """Send the specified command to the amplifier
@@ -312,6 +322,7 @@ class PrimareTalker(pykka.ThreadingActor):
             logger.debug('_send_command - in lock')
             command = PRIMARE_CMD[variable][INDEX_CMD]
             data = PRIMARE_CMD[variable][INDEX_VARIABLE]
+            reply = PRIMARE_CMD[variable][INDEX_REPLY]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
@@ -323,10 +334,10 @@ class PrimareTalker(pykka.ThreadingActor):
             logger.debug('_send_command - after write - data: %s', data)
             if PRIMARE_CMD[variable][INDEX_WAIT] == True:
                 self._read_event.wait()
-                reply_data = self.event_reply[variable]
-                self.event_reply[variable] = ''
+                reply_data = PRIMARE_REPLY[reply[0:2]]
+                PRIMARE_REPLY[reply] = ''
             else:
-                reply_data = PRIMARE_CMD[variable][INDEX_REPLY]
+                reply_data = reply
             logger.debug('_send_command - after event')
             self._read_event.set()
             self._read_event.clear()
@@ -367,6 +378,12 @@ class PrimareTalker(pykka.ThreadingActor):
 
 
     # Public methods
+    def stop_reader(self):
+        self._alive = False
+        self._send_command('verbose_toggle')
+        self.thread_read.join()
+        logger.info("Primare reader thread finished...exiting")
+
     def power_on(self):
         """Power on the Primare amplifier."""
         self._send_command('power_set', '01')
@@ -419,6 +436,7 @@ class PrimareTalker(pykka.ThreadingActor):
 
         :rtype: int in range [0..100] or :class:`None`
         """
+        logger.debug("LASSE - volume_get: %d", self._volume)
         return self._volume
 
     def volume_set(self, volume):
@@ -434,7 +452,8 @@ class PrimareTalker(pykka.ThreadingActor):
         reply = self._send_command('volume_set',
                                    '%02X' % target_primare_volume)
         if reply and int(reply, 16) == target_primare_volume:
-            self._volume = int(reply, 16)
+            self._volume = volume
+            logger.debug("LASSE - target volume SUCCESS, _volume: %d", self._volume)
             return True
         else:
             return False
@@ -442,13 +461,13 @@ class PrimareTalker(pykka.ThreadingActor):
     def volume_up(self):
         reply = self._send_command('volume_up')
         if reply:
-            self._volume = int(reply, 16)
+            self._volume += 1
         return self._volume.get()
 
     def volume_down(self):
         reply = self._send_command('volume_down')
         if reply:
-            self._volume = int(reply, 16)
+            self._volume -= 1
         return self._volume.get()
 
     def balance_adjust(self, adjustment):
