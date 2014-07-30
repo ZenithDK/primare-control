@@ -46,31 +46,42 @@ The Primare amplifier must be connected to the machine running Mopidy using a
 serial cable.
 
 To use the Primare amplifier ot control volume, set the ``audio/mixer`` config
-value in ``mopidy.conf`` to ``primaremixer``. You probably also needs to add some
-properties to the ``audio/mixer`` config value.
+value in ``mopidy.conf`` to ``primare``. You probably also needs to add some
+properties to the ``primare`` config section.
 
 Supported properties includes:
 
 - ``port``: The serial device to use, defaults to ``/dev/ttyUSB0``. This must
   be set correctly for the mixer to work.
 
-- ``source``: The source that should be selected on the amplifier, like
-  ``aux``, ``disc``, ``tape``, ``tuner``, etc. Leave unset if you don't want
-  the mixer to change it for you.
+- ``source``: The source that should be selected on the amplifier.
+  The valid sources are in the range 01..07, like ``01``, ``02``, etc.
+  Leave unset if you don't want the mixer to change it for you.
+
+- ``volume``: Default volume for the amplifier in the range 00..100.
+  Leave unset if you don't want the mixer to change it for you.
 
 Configuration examples::
 
     # Minimum configuration, if the amplifier is available at /dev/ttyUSB0
     [audio]
-    mixer = primaremixer
+    mixer = primare
 
     # Minimum configuration, if the amplifier is available elsewhere
     [audio]
-    mixer = primaremixer port=/dev/ttyUSB3
+    mixer = primare
+
+    [primare]
+    port=/dev/ttyUSB3
 
     # Full configuration
     [audio]
-    mixer = primaremixer port=/dev/ttyUSB0 source=aux
+    mixer = primare
+
+    [primare]
+    port=/dev/ttyUSB3
+    source=05
+    volume=40
 
 
 Project resources
