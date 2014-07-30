@@ -21,6 +21,7 @@ class Extension(ext.Extension):
         schema = super(Extension, self).get_config_schema()
         schema['port'] = config.String()
         schema['source'] = config.String(optional=True)
+        schema['volume'] = config.String(optional=True)
         return schema
 
     def setup(self, registry):

@@ -20,7 +20,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
 
         self.port = config['primare']['port']
         self.source = config['primare']['source'] or None
-        # TODO: Support default volume configuration
+        self.volume = config['primare']['volume'] or None
 
         self._primare = None
 
@@ -45,7 +45,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
 
         :rtype: int in range [0..100] or :class:`None`
         """
-        return self._primare.volume_get().get()
+        return self._primare.volume_get()
 
     def set_volume(self, volume):
         """
@@ -55,7 +55,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         :type volume: int
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        success = self._primare.volume_set(volume).get()
+        success = self._primare.volume_set(volume)
         if success:
             self.trigger_volume_changed(volume)
         return success
@@ -67,7 +67,7 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         :rtype: :class:`True` if muted, :class:`False` if unmuted,
         :class:`None` if unknown.
         """
-        return self._primare.mute_get().get()
+        return self._primare.mute_get()
 
     def set_mute(self, mute):
         """
@@ -77,15 +77,24 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         :type mute: bool
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        success = self._primare.mute_set(mute).get()
+        success = self._primare.mute_set(mute)
         if success:
             self.trigger_mute_changed(mute)
         return success
+
+    def unsolicited_updates(self, variable, data):
+        if variable == '03':
+            logger.info('Primare mixer: Unsolicited VOLUME - data: %s', data)
+            pass
+        if variable == '09':
+            logger.info('Primare mixer: Unsolicited MUTE - data: %s', data)
+            pass
 
     def _connect_primare(self):
         logger.info('Primare mixer: Connecting through "%s", using input: %s',
                     self.port,
                     self.source if self.source is not None else "<DEFAULT>")
-        self._primare = primare_serial.PrimareTalker.start(
-            port=self.port, input_source=self.source
-            ).proxy()
+        self._primare = primare_serial.PrimareTalker(
+            unsolicited_cb=self.actor_ref.proxy().unsolicited_updates,
+            port=self.port, source=self.source, volume=self.volume
+            )
