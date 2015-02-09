@@ -5,6 +5,7 @@ from mopidy import exceptions
 
 import binascii
 import logging
+import select
 import serial
 import struct
 import threading
@@ -13,7 +14,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # from mopidy_primare import primare_serial
-# pt = primare_serial.PrimareTalker(port="/dev/ttyUSB0", input_source=None)
+# pt = primare_serial.PrimareTalker(port="/dev/ttyUSB0")
 # pt.power_on()
 
 # Primare documentation on their RS232 protocol writes this:
@@ -103,7 +104,7 @@ PRIMARE_REPLY = {
     '0A': '',  # dim'
     '0D': '',  # verbose'
     '0E': '',  # menu'
-#    'YY': '',  # remote_cmd'
+    #    'YY': '',  # remote_cmd'
     '12': '',  # ir_input'
     '13': '',  # recall_factory_settings'
     '14': '',  # inputname'
@@ -112,20 +113,23 @@ PRIMARE_REPLY = {
     '17': ''  # swversion'
 }
 # TODO:
-# IMPORTANT
-# * Continouosly update model based on what the reader thread sends up
-# * Better reply handling than table?
-# * Remove result validation or use it in PRIMARE_CMD dict
+# FIXING Continouosly update model based on what the reader thread sends up
+# FIXING Better reply handling than table?
+# FIXING Remove result validation or use it in PRIMARE_CMD dict
 # * Better error handling
-#       After suspend/resume, if volume up/down fails (or similar), try turning amp on
+#       After suspend/resume, if volume up/down fails (or similar),
+#       try turning amp on
 #
 # LATER
-# * v2: Implement as module(?), not class, for multiple writers/subscribers (singleton)
-#       Seems like a factory would be better, so 'import primare_serial' then primare_serial.initComs()
-#       which then creates the single Serial object.
-# * v2: Add notification callback mechanism to notify users of changes on amp (dials or other SW)
+# * v2: Implement as module(?), not class, for multiple writers/subscribers
+#       (singleton)
+#       Seems like a factory would be better, so 'import primare_serial' then
+#       primare_serial.initComs() which then creates the single Serial object.
+# * v2: Add notification callback mechanism to notify users of changes on
+#       amp (dials or other SW)
 #       http://bit.ly/WGRn0g
-#       Better idea: websocket - http://forums.lantronix.com/showthread.php?p=3131
+#       Better idea: websocket
+#       http://forums.lantronix.com/showthread.php?p=3131
 # * ...
 
 
@@ -149,24 +153,26 @@ class PrimareTalker():
     # confirmations and calibration will decrease volume forever. If you set
     # the timeout too high, stuff takes more time. 0.8s seems like a good value
     # for Primare I22.
-    TIMEOUT = 2.0
+    TIMEOUT = 1.0
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
-    def __init__(self, unsolicited_cb, port, source, volume):
-        self._unsolicited_cb = unsolicited_cb
+    def __init__(self, port, source=None, volume=None):
         self._port = port
         self._source = source
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = int(volume) if volume else None
 
+        self._info = {'14': '', '15': '', '16': '', '17': ''}
+        self._initializing = True
         self._alive = True
         self._mute_state = False
         self._device = None
+        self._epoll = select.epoll()
         self._write_lock = threading.Lock()
-        self._read_event = threading.Event()
+        # self._reader_sig = threading.Event()
 
         self._setup()
 
@@ -175,7 +181,7 @@ class PrimareTalker():
         logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
 
-        logger.debug('setup - starting thread')
+        # logger.debug('setup - starting thread')
         self.thread_read = threading.Thread(target=self._primare_reader)
         self.thread_read.setName('PrimareSerial')
         self.thread_read.start()
@@ -195,6 +201,10 @@ class PrimareTalker():
         if self._device is None:
             raise exceptions.MixerError("Failed to start serial " +
                                         "connection to amplifier")
+        else:
+            self._epoll.register(self._device.fileno(), select.EPOLLIN)
+            # logger.info("LASSE - fileno: %d - mask: %s",
+            #            self._device.fileno(), select.EPOLLIN)
 
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
@@ -207,29 +217,20 @@ class PrimareTalker():
         if self._volume:
             self.volume_set(self._volume)
         else:
-            self._volume = self._get_current_volume()
+            self._get_current_volume()
 
     def _print_device_info(self):
-        logger.info("""Connected to:
-            Manufacturer:  %s
-            Model:         %s
-            SW Version:    %s
-            Current input: %s """,
-                    self.manufacturer_get(),
-                    self.modelname_get(),
-                    self.swversion_get(),
-                    self.inputname_current_get())
+        self.manufacturer_get()
+        self.modelname_get()
+        self.swversion_get()
+        self.inputname_current_get()
 
     def _get_current_volume(self):
         """Read current volume by doing volume_down and then
         volume_up and use reply from that to know the current volume
         The reply from the amplifier is in hex, so convert to decimal"""
-        reply = self._send_command('volume_down')
-        if reply:
-            reply = self._send_command('volume_up')
-            if reply:
-                return int(reply, 16)
-        return 0
+        self._send_command('volume_down')
+        self._send_command('volume_up')
 
     def _primare_reader(self):
         """Read data from the serial port
@@ -246,7 +247,7 @@ class PrimareTalker():
         while(self._alive):
             variable_char = ''
             data = ''
-            #logger.debug('_primare_reader - still alive')
+            logger.debug('_primare_reader - still alive')
 
             # Read line from device.
             if not self._device.isOpen():
@@ -257,27 +258,41 @@ class PrimareTalker():
             leneol = len(eol)
 
             bytes_read = bytearray()
+            read_reply = False
+            while not read_reply:
+                # logger.debug('_primare_reader - pre-epoll')
+                events = self._epoll.poll()
+                # logger.debug('_primare_reader - post-epoll(%d): %s',
+                #             len(events), events)
 
-            while True:
-                #logger.debug('_primare_reader - pre-read')
-                c = self._device.read(1)
-                #logger.debug('_primare_reader - post-read: %s', binascii.hexlify(c))
-                if c:
-                    bytes_read += c
-                    if bytes_read[-leneol:] == eol:
-                        break
+                fileno, event = events[0]
+                if fileno == self._device.fileno:
+                    logger.warning("epoll - fd: %d, evt: %d", fileno, event)
+                    read_reply = True
+                if event & select.EPOLLIN:
+                    # logger.debug('_primare_reader - pre-read')
+                    c = self._device.read(1)
+                    # logger.debug('_primare_reader - post-read: %s',
+                    #             binascii.hexlify(c))
+
+                    if c:
+                        bytes_read += c
+                        if bytes_read[-leneol:] == eol:
+                            read_reply = True
+                        else:
+                            # logger.debug('_primare_reader - not-eol: %s',
+                            #    binascii.hexlify(bytes_read[-leneol:]))
+                            pass
                     else:
-                        #logger.debug('_primare_reader - not-eol: %s', binascii.hexlify(bytes_read[-leneol:]))
-                        pass
-
-                else:
-                    break
+                        read_reply = True
             # End of 'Modified version of pySerial's readline'
 
+            # logger.debug('Post epoll')
             if bytes_read:
                 logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
                 byte_string = struct.unpack('c' * len(bytes_read), bytes_read)
-                variable_char =  binascii.hexlify(''.join(byte_string[POS_REPLY_VAR]))
+                variable_char = binascii.hexlify(''.join(
+                    byte_string[POS_REPLY_VAR]))
                 byte_string = byte_string[POS_REPLY_DATA]
 
                 # We need to replace double DLE (0x10) with single DLE
@@ -294,15 +309,27 @@ class PrimareTalker():
                 if len(byte_string) % 2 != 0:
                     data += binascii.hexlify(byte_string[-1])
 
-                logger.debug('_primare_reader - index: "%s"', str.upper(variable_char))
+                # logger.debug('_primare_reader - index: "%s"',
+                #             str.upper(variable_char))
 
-                PRIMARE_REPLY[str.upper(variable_char)] = data
-                self._read_event.set()
-                self._read_event.clear()
-                logger.debug('_primare_reader - post-event set')
-                # TODO: Wait on event so that _send_command is done and then broadcast to subscribers
-                # But, what then, to do when event received without a command sent? :-)
-                # For now, just check if mute and volume has changed and update mixer with that
+                if variable_char in ['09', '14', '15', '16', '17']:
+                    logger.debug('_primare_reader - index: "%s"',
+                                 binascii.unhexlify(data))
+                    if variable_char == '09':
+                        self._volume = int(data, 16)
+                    else:
+                        self._info[variable_char] = data
+
+                # PRIMARE_REPLY[str.upper(variable_char)] = data
+                # self._read_event.set()
+                # self._read_event.clear()
+                # logger.debug('_primare_reader - post-event set')
+                # TODO: Wait on event so that _send_command is done and then
+                # broadcast to subscribers
+                # But, what then, to do when event received without a command
+                # sent? :-)
+                # For now, just check if mute and volume has changed and update
+                # mixer with that
                 # if PRIMARE_REPLY['03'] != '':
                 #     self._unsolicited_cb('03', PRIMARE_REPLY['03'])
                 #     PRIMARE_REPLY['03'] = ''
@@ -313,7 +340,20 @@ class PrimareTalker():
                 logger.debug('Read(0): "%s" - len: %d',
                              bytes_read, len(bytes_read))
 
-            #print "_primare_reader - readline, var: '%s' - data: '%s'" % (variable_char, data)
+            if '' not in self._info.values() and self._initializing:
+                self._initializing = False
+                logger.info("""Connected to:
+                            Manufacturer:  %s
+                            Model:         %s
+                            SW Version:    %s
+                            Current input: %s """,
+                            binascii.unhexlify(self._info['15']),
+                            binascii.unhexlify(self._info['14']),
+                            binascii.unhexlify(self._info['16']),
+                            binascii.unhexlify(self._info['17']))
+
+            # print "_primare_reader - readline, var: '%s' - data: '%s'" %
+            # (variable_char, data)
 
     def _send_command(self, variable, option=None):
         """Send the specified command to the amplifier
@@ -324,34 +364,36 @@ class PrimareTalker():
         :type option: string
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        reply_data = ''
-        logger.debug('_send_command - pre lock - lock.locked: %s',
-                     self._write_lock.locked())
+        # logger.debug('_send_command - pre lock - lock.locked: %s',
+        #             self._write_lock.locked())
+
         with self._write_lock:
-            #logger.debug('_send_command - in lock')
+            # START OF WITH BLOCK
+            # logger.debug('_send_command - in lock')
             command = PRIMARE_CMD[variable][INDEX_CMD]
             data = PRIMARE_CMD[variable][INDEX_VARIABLE]
-            reply = PRIMARE_CMD[variable][INDEX_REPLY]
+            # reply = PRIMARE_CMD[variable][INDEX_REPLY]
             if option is not None:
                 logger.debug('_send_command - replace YY with "%s"', option)
                 data = data.replace('YY', option)
-            #logger.debug(
-            #    '_send_command - before write - cmd: "%s", ' +
-            #    'data: "%s", option: "%s"',
-            #    command, data, option)
+            # logger.debug('_send_command - before write - cmd: "%s", ' +
+            #              'data: "%s", option: "%s"', command, data, option)
             self._write(command, data)
-            #logger.debug('_send_command - after write - data: %s', data)
-            if PRIMARE_CMD[variable][INDEX_WAIT] == True:
-                self._read_event.wait()
-                reply_data = PRIMARE_REPLY[reply[0:2]]
-                PRIMARE_REPLY[reply] = ''
-            else:
-                reply_data = reply
-            logger.debug('_send_command - after event')
-            self._read_event.set()
-            self._read_event.clear()
-        logger.debug('_send_command - post lock - reply_data: %s', reply_data)
-        return reply_data
+            # logger.debug('_send_command - after write - data: %s', data)
+            # if PRIMARE_CMD[variable][INDEX_WAIT] is True:
+            # START BLOCK
+            # self._read_event.wait()
+            # reply_data = PRIMARE_REPLY[reply[0:2]]
+            # PRIMARE_REPLY[reply] = ''
+            # else:
+            # END BLOCK
+            # reply_data = reply
+            # logger.debug('_send_command - after event')
+            # self._read_event.set()
+            # self._read_event.clear()
+        # END OF WITH BLOCK
+
+        # logger.debug('_send_command - postlock - reply_data: %s', reply_data)
 
     def _write(self, cmd_type, data):
         """Write data to the serial port
@@ -369,9 +411,9 @@ class PrimareTalker():
                 data_safe += pair
         # Convert ascii string to binary
         binary_variable = binascii.unhexlify(data_safe)
-        logger.debug(
-            '_write - cmd_type: "%s", data_safe: "%s"',
-            cmd_type, data_safe)
+        # logger.debug(
+        #    '_write - cmd_type: "%s", data_safe: "%s"',
+        #    cmd_type, data_safe)
 
         if cmd_type == 'W':
             binary_data = (BYTE_STX + BYTE_WRITE +
@@ -384,12 +426,14 @@ class PrimareTalker():
             self._device.open()
         self._device.write(binary_data)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
-
+        # Things are wonky if we try to write too quickly
+        time.sleep(0.8)
 
     # Public methods
     def stop_reader(self):
         self._alive = False
         self._send_command('verbose_toggle')
+        self._epoll.unregister(self._device.fileno())
         self.thread_read.join()
         logger.info("Primare reader thread finished...exiting")
 
@@ -407,22 +451,15 @@ class PrimareTalker():
         :rtype: :class:True if amplifier turned on as result of toggle,
           :class:False otherwise
         """
-        reply = self._send_command('power_toggle')
-        if reply and reply == '01':
-            return True
-        else:
-            return False
+        self._send_command('power_toggle')
 
-    def input_set(self, input_source):
+    def input_set(self, source):
         """Set the current input used by the Primare amplifier.
 
         :rtype: name of current input if success, empty string if failure
         """
-        reply = self._send_command('input_set', '%02X' % int(input_source))
-        if reply:
-            return self.inputname_current_get()
-        else:
-            return ""
+        self._send_command('input_set', '%02X' % int(source))
+        self.inputname_current_get()
 
     def input_next(self):
         pass
@@ -458,30 +495,31 @@ class PrimareTalker():
         """
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
         logger.debug("LASSE - target volume: %d", target_primare_volume)
-        reply = self._send_command('volume_set',
-                                   '%02X' % target_primare_volume)
+        self._send_command('volume_set',
+                           '%02X' % target_primare_volume)
         # There's a crazy bug where setting the volume to 65 and above will
         # generate a reply indicating a volume of 1 less!?
         # Hence the work-around
-        if reply and (int(reply, 16) == target_primare_volume or
-                      int(reply, 16) == target_primare_volume - 1):
-            self._volume = volume
-            logger.debug("LASSE - target volume SUCCESS, _volume: %d", self._volume)
-            return True
-        else:
-            return False
+        # if reply and (int(reply, 16) == target_primare_volume or
+        #              int(reply, 16) == target_primare_volume - 1):
+        #    self._volume = volume
+        #    logger.debug("LASSE - target volume SUCCESS, _volume: %d",
+        #                 self._volume)
+        #    return True
+        # else:
+        #    return False
 
     def volume_up(self):
-        reply = self._send_command('volume_up')
-        if reply:
-            self._volume += 1
-        return self._volume.get()
+        self._send_command('volume_up')
+        # if reply:
+        #    self._volume += 1
+        # return self._volume.get()
 
     def volume_down(self):
-        reply = self._send_command('volume_down')
-        if reply:
-            self._volume -= 1
-        return self._volume.get()
+        self._send_command('volume_down')
+        # if reply:
+        #    self._volume -= 1
+        # return self._volume.get()
 
     def balance_adjust(self, adjustment):
         pass
@@ -490,13 +528,13 @@ class PrimareTalker():
         pass
 
     def mute_toggle(self):
-        reply = self._send_command('mute_toggle')
-        if reply == '01':
-            self._mute_state = True
-            return True
-        else:
-            self._mute_state = False
-            return False
+        self._send_command('mute_toggle')
+        # if reply == '01':
+        #    self._mute_state = True
+        #    return True
+        # else:
+        #    self._mute_state = False
+        #    return False
 
     def mute_get(self):
         """
@@ -516,13 +554,13 @@ class PrimareTalker():
         :rtype: :class:`True` if success, :class:`False` if failure
         """
         mute_value = '01' if mute is True else '00'
-        reply = self._send_command('mute_set', mute_value)
-        if reply == '01':
-            self._mute_state = True
-            return True
-        else:
-            self._mute_state = False
-            return False
+        self._send_command('mute_set', mute_value)
+        # if reply == '01':
+        #    self._mute_state = True
+        #    return True
+        # else:
+        #    self._mute_state = False
+        #    return False
 
     def dim_cycle(self):
         pass
@@ -558,18 +596,17 @@ class PrimareTalker():
         pass
 
     def manufacturer_get(self):
-        return binascii.unhexlify(
-            self._send_command('manufacturer_get'))
+        self._send_command('manufacturer_get')
 
     def modelname_get(self):
-        return binascii.unhexlify(self._send_command('modelname_get'))
+        self._send_command('modelname_get')
 
     def swversion_get(self):
-        return binascii.unhexlify(self._send_command('swversion_get'))
+        self._send_command('swversion_get')
 
     def inputname_current_get(self):
-        return binascii.unhexlify(self._send_command('inputname_current_get'))
+        self._send_command('inputname_current_get')
 
     def inputname_specific_get(self, input):
         if input >= 0 and input <= 7:
-            return binascii.unhexlify(self._send_command('inputname_specific_get', '%02d' % input))
+            self._send_command('inputname_specific_get', '%02d' % input)
