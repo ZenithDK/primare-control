@@ -166,49 +166,54 @@ class PrimareTalker(ApplicationSession):
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
-    def __init__(self, port, source=None, volume=None,
-                 config=None):
+    def __init__(self, config=None):
         ApplicationSession.__init__(self, config)
+        self._config = config
+
         self._manufacturer = ''
         self._modelname = ''
         self._swversion = ''
         self._inputname = ''
+        self._source = None
+        self._volume = None
+        self._mute_state = False
 
-        self._port = port
-        logger.debug("LASSE - port: %s", port)
-        # print 'LASSE INIT'
-        self._source = source
+        self._port = self._config.extra['port']
+        logger.debug("LASSE - port: %s", self._port)
+        print 'LASSE INIT - port: %s' % self._port
+        if 'source' in self._config.extra:
+            self._source = self._config.extra['source']
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
-        self._volume = int(volume) if volume else None
+        if 'volume' in self._config.extra:
+            self._volume = int(self._config.extra['volume'])
 
         self._alive = True
-        self._mute_state = False
         self._device = None
         self._epoll = select.epoll()
         self._write_lock = threading.Lock()
 
-        # self._setup()
+        self._setup()
 
     # Crossbar.io WAMP stuff
     @inlineCallbacks
     def onJoin(self, details):  # noqa: N802
         logger.debug('session ready')
-        # print 'session ready'
+        print 'session ready'
 
-        # # SUBSCRIBE to a topic and receive events
-        # def onhello(msg):
-        #     print("event for 'onhello' received: {}".format(msg))
+        # SUBSCRIBE to a topic and receive events
+        def onhello(msg):
+            print("event for 'onhello' received: {}".format(msg))
 
-        # sub = yield self.subscribe(onhello, 'com.example.onhello')
-        # print("subscribed to topic 'onhello'")
+        sub = yield self.subscribe(onhello, 'com.example.onhello')
+        print("subscribed to topic 'onhello' - sub: %s", sub)
 
-        # # REGISTER a procedure for remote calling
-        # def add2(x, y):
-        #     print("add2() called with {} and {}".format(x, y))
-        #     return x + y
+        # REGISTER a procedure for remote calling
+        def add2(x, y):
+            print("add2() called with {} and {}".format(x, y))
+            return x + y
 
-        # reg = yield self.register(add2, 'com.example.add2')
-        # print("procedure add2() registered")
+        reg = yield self.register(add2, 'com.example.add2')
+        print("procedure add2() registered - reg: %s", reg)
 
         # # PUBLISH and CALL every second .. forever
         # #
@@ -693,13 +698,91 @@ class PrimareTalker(ApplicationSession):
             self._send_command('inputname_specific_get', '%02d' % input)
 
 
+class InnerTalker(ApplicationSession):
+
+    """
+    Independent thread which does the communication with the Primare amplifier.
+
+    Since the communication is done in an independent thread, Mopidy won't
+    block other requests while doing time consuming work.
+    """
+
+    # Crossbar.io WAMP stuff
+    @inlineCallbacks
+    def onJoin(self, details):  # noqa: N802
+        logger.debug('session ready')
+        print 'session ready'
+
+        # SUBSCRIBE to a topic and receive events
+        def onhello(msg):
+            print("event for 'onhello' received: {}".format(msg))
+
+        sub = yield self.subscribe(onhello, 'com.example.onhello')
+        print("subscribed to topic 'onhello' - %s", sub)
+
+        # # PUBLISH and CALL every second .. forever
+        # #
+        # counter = 0
+        # while True:
+
+        #     # PUBLISH an event
+        #     #
+        #     yield self.publish('com.example.oncounter', counter)
+        #     print("published to 'oncounter' with counter {}".format(counter))
+        #     counter += 1
+
+        #     # CALL a remote procedure
+        #     #
+        #     try:
+        #         res = yield self.call('com.example.mul2', counter, 3)
+        #         print("mul2() called with result: {}".format(res))
+        #     except ApplicationError as e:
+        #         # ignore errors due to the frontend not yet having
+        #         # registered the procedure we would like to call
+        #         if e.error != 'wamp.error.no_such_procedure':
+        #             raise e
+
+        #     yield sleep(1)
+
+
+class ManageRemoteSystem:
+    def __init__(self):
+        params = {'port': "/dev/ttyUSB0"}
+        self.runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
+                                        realm=u"realm1",
+                                        debug=True, debug_app=True,
+                                        debug_wamp=True, extra=params)
+
+    def start(self):
+        # Pass start_reactor=False to all runner.run() calls
+        self.runner.run(PrimareTalker, start_reactor=False)
+
+
+class InternalMessages:
+    def __init__(self):
+        self.runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
+                                        realm=u"realm1",
+                                        debug=True, debug_app=True,
+                                        debug_wamp=True)
+
+    def start(self):
+        # Same as above
+        self.runner.run(InnerTalker, start_reactor=False)
+
+    def kill(self):
+        self.runner.stop()
+
 if __name__ == '__main__':
     logger.debug("LASSE - pre WAMP")
-    params = {'port': "/dev/ttyUSB0"}
-    #                                 # realm="com.mopidy.primare")
-    runner = ApplicationRunner(url=u"ws://localhost:8998/ws", realm=u"realm1",
-                               debug=True, debug_app=True, debug_wamp=True,
-                               extra=params)
-    runner.run(PrimareTalker)
-    logger.debug("LASSE - post WAMP")
-    # print 'LASSE DAMMIT'
+    server = ManageRemoteSystem()
+    sendMessage = InternalMessages()
+    server.start()
+    sendMessage.start()
+    try:
+        from twisted.internet import reactor
+        reactor.run()
+    finally:
+        # TODO: Send 'stop()' RPC to PrimareTalker to shut down nicely
+        sendMessage.kill()
+        logger.debug("LASSE - post WAMP")
+        print 'LASSE DAMMIT'
