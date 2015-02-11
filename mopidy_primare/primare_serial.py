@@ -239,6 +239,14 @@ class PrimareTalker(ApplicationSession):
 
         #     yield sleep(1)
 
+    def onLeave(self, details):
+        print("session left")
+        self.stop_reader()
+        print("killed reader!")
+
+    def onDisconnect(self):
+        print("transport disconnected")
+
     # Private methods
     def _setup(self):
         logging.basicConfig(level=logging.DEBUG)
@@ -304,11 +312,13 @@ class PrimareTalker(ApplicationSession):
         Returns the data received between the STX and DLE+ETX markers
         """
         logger.debug('_primare_reader - starting')
+        print '_primare_reader - starting'
 
         while(self._alive):
             variable_char = ''
             data = ''
-            logger.debug('_primare_reader - still alive')
+            logger.debug('_primare_reader1 - still alive')
+            print '_primare_reader2 - still alive'
 
             # Read line from device.
             if not self._device.isOpen():
@@ -322,9 +332,11 @@ class PrimareTalker(ApplicationSession):
             read_reply = False
             while not read_reply:
                 # logger.debug('_primare_reader - pre-epoll')
+                print '_primare_reader - pre-epoll'
                 events = self._epoll.poll()
                 # logger.debug('_primare_reader - post-epoll(%d): %s',
                 #             len(events), events)
+                print '_primare_reader - post-epoll(%d): %s', len(events), events
 
                 fileno, event = events[0]
                 if fileno == self._device.fileno:
@@ -505,10 +517,14 @@ class PrimareTalker(ApplicationSession):
 
     # Public methods
     def stop_reader(self):
+        print "stop_reader - 1"
         self._alive = False
         # self._send_command('verbose_toggle')
         self._epoll.unregister(self._device.fileno())
+        self._device.close()
+        print "stop_reader - 2 - post unreg"
         self.thread_read.join()
+        print "stop_reader - 3 - post join"
         logger.info("Primare reader thread finished...exiting")
 
     def power_on(self):
@@ -698,91 +714,16 @@ class PrimareTalker(ApplicationSession):
             self._send_command('inputname_specific_get', '%02d' % input)
 
 
-class InnerTalker(ApplicationSession):
-
-    """
-    Independent thread which does the communication with the Primare amplifier.
-
-    Since the communication is done in an independent thread, Mopidy won't
-    block other requests while doing time consuming work.
-    """
-
-    # Crossbar.io WAMP stuff
-    @inlineCallbacks
-    def onJoin(self, details):  # noqa: N802
-        logger.debug('session ready')
-        print 'session ready'
-
-        # SUBSCRIBE to a topic and receive events
-        def onhello(msg):
-            print("event for 'onhello' received: {}".format(msg))
-
-        sub = yield self.subscribe(onhello, 'com.example.onhello')
-        print("subscribed to topic 'onhello' - %s", sub)
-
-        # # PUBLISH and CALL every second .. forever
-        # #
-        # counter = 0
-        # while True:
-
-        #     # PUBLISH an event
-        #     #
-        #     yield self.publish('com.example.oncounter', counter)
-        #     print("published to 'oncounter' with counter {}".format(counter))
-        #     counter += 1
-
-        #     # CALL a remote procedure
-        #     #
-        #     try:
-        #         res = yield self.call('com.example.mul2', counter, 3)
-        #         print("mul2() called with result: {}".format(res))
-        #     except ApplicationError as e:
-        #         # ignore errors due to the frontend not yet having
-        #         # registered the procedure we would like to call
-        #         if e.error != 'wamp.error.no_such_procedure':
-        #             raise e
-
-        #     yield sleep(1)
-
-
-class ManageRemoteSystem:
-    def __init__(self):
-        params = {'port': "/dev/ttyUSB0"}
-        self.runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
-                                        realm=u"realm1",
-                                        debug=True, debug_app=True,
-                                        debug_wamp=True, extra=params)
-
-    def start(self):
-        # Pass start_reactor=False to all runner.run() calls
-        self.runner.run(PrimareTalker, start_reactor=False)
-
-
-class InternalMessages:
-    def __init__(self):
-        self.runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
-                                        realm=u"realm1",
-                                        debug=True, debug_app=True,
-                                        debug_wamp=True)
-
-    def start(self):
-        # Same as above
-        self.runner.run(InnerTalker, start_reactor=False)
-
-    def kill(self):
-        self.runner.stop()
-
 if __name__ == '__main__':
     logger.debug("LASSE - pre WAMP")
-    server = ManageRemoteSystem()
-    sendMessage = InternalMessages()
-    server.start()
-    sendMessage.start()
     try:
-        from twisted.internet import reactor
-        reactor.run()
+        params = {'port': "/dev/ttyUSB0"}
+        runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
+                                   realm=u"realm1",
+                                   debug=True, debug_app=True,
+                                   debug_wamp=True, extra=params)
+        runner.run(PrimareTalker)
     finally:
         # TODO: Send 'stop()' RPC to PrimareTalker to shut down nicely
-        sendMessage.kill()
         logger.debug("LASSE - post WAMP")
-        print 'LASSE DAMMIT'
+        print 'LASSE post WAMP'
