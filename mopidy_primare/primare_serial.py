@@ -11,6 +11,13 @@ import struct
 import threading
 import time
 
+from twisted.internet.defer import inlineCallbacks
+
+# from autobahn.twisted.util import sleep
+from autobahn.twisted.wamp import ApplicationRunner
+from autobahn.twisted.wamp import ApplicationSession
+# from autobahn.wamp.exception import ApplicationError
+
 logger = logging.getLogger(__name__)
 
 # from mopidy_primare import primare_serial
@@ -133,7 +140,7 @@ PRIMARE_REPLY = {
 # * ...
 
 
-class PrimareTalker():
+class PrimareTalker(ApplicationSession):
 
     """
     Independent thread which does the communication with the Primare amplifier.
@@ -153,28 +160,79 @@ class PrimareTalker():
     # confirmations and calibration will decrease volume forever. If you set
     # the timeout too high, stuff takes more time. 0.8s seems like a good value
     # for Primare I22.
-    TIMEOUT = 1.0
+    TIMEOUT = 0.8
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
-    def __init__(self, port, source=None, volume=None):
+    def __init__(self, port, source=None, volume=None,
+                 config=None):
+        ApplicationSession.__init__(self, config)
+        self._manufacturer = ''
+        self._modelname = ''
+        self._swversion = ''
+        self._inputname = ''
+
         self._port = port
+        logger.debug("LASSE - port: %s", port)
+        # print 'LASSE INIT'
         self._source = source
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = int(volume) if volume else None
 
-        self._info = {'14': '', '15': '', '16': '', '17': ''}
-        self._initializing = True
         self._alive = True
         self._mute_state = False
         self._device = None
         self._epoll = select.epoll()
         self._write_lock = threading.Lock()
-        # self._reader_sig = threading.Event()
 
-        self._setup()
+        # self._setup()
+
+    # Crossbar.io WAMP stuff
+    @inlineCallbacks
+    def onJoin(self, details):  # noqa: N802
+        logger.debug('session ready')
+        # print 'session ready'
+
+        # # SUBSCRIBE to a topic and receive events
+        # def onhello(msg):
+        #     print("event for 'onhello' received: {}".format(msg))
+
+        # sub = yield self.subscribe(onhello, 'com.example.onhello')
+        # print("subscribed to topic 'onhello'")
+
+        # # REGISTER a procedure for remote calling
+        # def add2(x, y):
+        #     print("add2() called with {} and {}".format(x, y))
+        #     return x + y
+
+        # reg = yield self.register(add2, 'com.example.add2')
+        # print("procedure add2() registered")
+
+        # # PUBLISH and CALL every second .. forever
+        # #
+        # counter = 0
+        # while True:
+
+        #     # PUBLISH an event
+        #     #
+        #     yield self.publish('com.example.oncounter', counter)
+        #     print("published to 'oncounter' with counter {}".format(counter))
+        #     counter += 1
+
+        #     # CALL a remote procedure
+        #     #
+        #     try:
+        #         res = yield self.call('com.example.mul2', counter, 3)
+        #         print("mul2() called with result: {}".format(res))
+        #     except ApplicationError as e:
+        #         # ignore errors due to the frontend not yet having
+        #         # registered the procedure we would like to call
+        #         if e.error != 'wamp.error.no_such_procedure':
+        #             raise e
+
+        #     yield sleep(1)
 
     # Private methods
     def _setup(self):
@@ -196,8 +254,8 @@ class PrimareTalker():
             baudrate=self.BAUDRATE,
             bytesize=self.BYTESIZE,
             parity=self.PARITY,
-            stopbits=self.STOPBITS,
-            timeout=self.TIMEOUT)
+            stopbits=self.STOPBITS)
+        # timeout=self.TIMEOUT)
         if self._device is None:
             raise exceptions.MixerError("Failed to start serial " +
                                         "connection to amplifier")
@@ -223,6 +281,7 @@ class PrimareTalker():
         self.manufacturer_get()
         self.modelname_get()
         self.swversion_get()
+        # We always get inputname last, this represents our initialization
         self.inputname_current_get()
 
     def _get_current_volume(self):
@@ -239,9 +298,6 @@ class PrimareTalker():
         Also replace any '\x10\x10' sequences with '\x10'.
         Returns the data received between the STX and DLE+ETX markers
         """
-        # The reader will forever do readline, unless _send_command
-        # takes the lock to send a command and get a reply
-
         logger.debug('_primare_reader - starting')
 
         while(self._alive):
@@ -309,21 +365,8 @@ class PrimareTalker():
                 if len(byte_string) % 2 != 0:
                     data += binascii.hexlify(byte_string[-1])
 
-                # logger.debug('_primare_reader - index: "%s"',
-                #             str.upper(variable_char))
-
-                if variable_char in ['09', '14', '15', '16', '17']:
-                    logger.debug('_primare_reader - index: "%s"',
-                                 binascii.unhexlify(data))
-                    if variable_char == '09':
-                        self._volume = int(data, 16)
-                    else:
-                        self._info[variable_char] = data
-
-                # PRIMARE_REPLY[str.upper(variable_char)] = data
-                # self._read_event.set()
-                # self._read_event.clear()
-                # logger.debug('_primare_reader - post-event set')
+                self._parse_and_store(variable_char, data)
+                self._broadcast_reply(variable_char, data)
                 # TODO: Wait on event so that _send_command is done and then
                 # broadcast to subscribers
                 # But, what then, to do when event received without a command
@@ -339,19 +382,6 @@ class PrimareTalker():
             else:
                 logger.debug('Read(0): "%s" - len: %d',
                              bytes_read, len(bytes_read))
-
-            if '' not in self._info.values() and self._initializing:
-                self._initializing = False
-                logger.info("""Connected to:
-                            Manufacturer:  %s
-                            Model:         %s
-                            SW Version:    %s
-                            Current input: %s """,
-                            binascii.unhexlify(self._info['15']),
-                            binascii.unhexlify(self._info['14']),
-                            binascii.unhexlify(self._info['16']),
-                            binascii.unhexlify(self._info['17']))
-
             # print "_primare_reader - readline, var: '%s' - data: '%s'" %
             # (variable_char, data)
 
@@ -415,24 +445,63 @@ class PrimareTalker():
         #    '_write - cmd_type: "%s", data_safe: "%s"',
         #    cmd_type, data_safe)
 
-        if cmd_type == 'W':
-            binary_data = (BYTE_STX + BYTE_WRITE +
-                           binary_variable + BYTE_DLE_ETX)
-        else:
-            binary_data = (BYTE_STX + BYTE_READ +
-                           binary_variable + BYTE_DLE_ETX)
+        binary_data = BYTE_STX
+        binary_data += BYTE_WRITE if cmd_type == 'W' else BYTE_READ
+        binary_data += binary_variable + BYTE_DLE_ETX
+
         # Write data to device.
         if not self._device.isOpen():
             self._device.open()
         self._device.write(binary_data)
         logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
         # Things are wonky if we try to write too quickly
-        time.sleep(0.8)
+        time.sleep(0.06)
+
+    def _parse_and_store(self, variable_char, data):
+        # We want info on:
+        # power (01)
+        # volume (03)
+        # mute (09)
+        # manufacturer (15)
+        # modelname (16)
+        # swversion (17)
+        if variable_char in ['01', '03', '09', '14', '15', '16', '17']:
+            logger.debug('_primare_reader - index: "%s"',
+                         binascii.unhexlify(data))
+            if variable_char is '01':
+                self._power_state = int(data, 16)
+            elif variable_char is '03':
+                self._volume = int(data, 16)
+            elif variable_char is '09':
+                self._mute_state = int(data, 16)
+            elif variable_char is '14':
+                if self._inputname is '':
+                    self._inputname = data
+                    logger.info("""Connected to:
+                                Manufacturer:  %s
+                                Model:         %s
+                                SW Version:    %s
+                                Current input: %s """,
+                                binascii.unhexlify(self._manufacturer),
+                                binascii.unhexlify(self._modelname),
+                                binascii.unhexlify(self._swversion),
+                                binascii.unhexlify(self._inputname))
+                else:
+                    self._inputname = data
+            elif variable_char is '15':
+                self._manufacturer = data
+            elif variable_char is '16':
+                self._manufacturer = data
+            elif variable_char is '17':
+                self._manufacturer = data
+
+    def _broadcast_reply(self, variable_char, data):
+        pass
 
     # Public methods
     def stop_reader(self):
         self._alive = False
-        self._send_command('verbose_toggle')
+        # self._send_command('verbose_toggle')
         self._epoll.unregister(self._device.fileno())
         self.thread_read.join()
         logger.info("Primare reader thread finished...exiting")
@@ -462,9 +531,11 @@ class PrimareTalker():
         self.inputname_current_get()
 
     def input_next(self):
+        # TODO
         pass
 
     def input_prev(self):
+        # TODO
         pass
 
     def volume_get(self):
@@ -522,9 +593,11 @@ class PrimareTalker():
         # return self._volume.get()
 
     def balance_adjust(self, adjustment):
+        # TODO
         pass
 
     def balance_set(self, balance):
+        # TODO
         pass
 
     def mute_toggle(self):
@@ -563,13 +636,15 @@ class PrimareTalker():
         #    return False
 
     def dim_cycle(self):
+        # TODO
         pass
 
     def dim_set(self, level):
+        # TODO
         pass
 
     def verbose_toggle(self):
-        pass
+        self._send_command('verbose_toggle')
 
     def verbose_set(self, verbose):
         if verbose:
@@ -578,21 +653,27 @@ class PrimareTalker():
             self._send_command('verbose_set', '00')
 
     def menu_toggle(self, verbose):
+        # TODO
         pass
 
     def menu_set(self, menu):
+        # TODO
         pass
 
     def remote_cmd(self, cmd):
+        # TODO
         pass
 
     def ir_input_toggle(self):
+        # TODO
         pass
 
     def ir_input_set(self, ir_input):
+        # TODO
         pass
 
     def recall_factory_settings(self):
+        # TODO
         pass
 
     def manufacturer_get(self):
@@ -610,3 +691,15 @@ class PrimareTalker():
     def inputname_specific_get(self, input):
         if input >= 0 and input <= 7:
             self._send_command('inputname_specific_get', '%02d' % input)
+
+
+if __name__ == '__main__':
+    logger.debug("LASSE - pre WAMP")
+    params = {'port': "/dev/ttyUSB0"}
+    #                                 # realm="com.mopidy.primare")
+    runner = ApplicationRunner(url=u"ws://localhost:8998/ws", realm=u"realm1",
+                               debug=True, debug_app=True, debug_wamp=True,
+                               extra=params)
+    runner.run(PrimareTalker)
+    logger.debug("LASSE - post WAMP")
+    # print 'LASSE DAMMIT'
