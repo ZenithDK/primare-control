@@ -178,6 +178,9 @@ class PrimareTalker(ApplicationSession):
         self._volume = None
         self._mute_state = False
 
+        # Setup logging so that is available
+        logging.basicConfig(level=logging.DEBUG)
+
         self._port = self._config.extra['port']
         logger.debug("LASSE - port: %s", self._port)
         print 'LASSE INIT - port: %s' % self._port
@@ -190,7 +193,7 @@ class PrimareTalker(ApplicationSession):
         self._alive = True
         self._device = None
         self._epoll = select.epoll()
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.Lock()  # TODO: Kill with fire
 
         self._setup()
 
@@ -249,7 +252,6 @@ class PrimareTalker(ApplicationSession):
 
     # Private methods
     def _setup(self):
-        logging.basicConfig(level=logging.DEBUG)
         self._open_connection()
 
         # logger.debug('setup - starting thread')
@@ -333,31 +335,32 @@ class PrimareTalker(ApplicationSession):
             while not read_reply:
                 # logger.debug('_primare_reader - pre-epoll')
                 print '_primare_reader - pre-epoll'
-                events = self._epoll.poll()
+                events = self._epoll.poll(2)
                 # logger.debug('_primare_reader - post-epoll(%d): %s',
                 #             len(events), events)
                 print '_primare_reader - post-epoll(%d): %s', len(events), events
 
-                fileno, event = events[0]
-                if fileno == self._device.fileno:
-                    logger.warning("epoll - fd: %d, evt: %d", fileno, event)
-                    read_reply = True
-                if event & select.EPOLLIN:
-                    # logger.debug('_primare_reader - pre-read')
-                    c = self._device.read(1)
-                    # logger.debug('_primare_reader - post-read: %s',
-                    #             binascii.hexlify(c))
-
-                    if c:
-                        bytes_read += c
-                        if bytes_read[-leneol:] == eol:
-                            read_reply = True
-                        else:
-                            # logger.debug('_primare_reader - not-eol: %s',
-                            #    binascii.hexlify(bytes_read[-leneol:]))
-                            pass
-                    else:
+                if len(events) > 0:
+                    fileno, event = events[0]
+                    if fileno == self._device.fileno:
+                        logger.warning("epoll - fd: %d, evt: %d", fileno, event)
                         read_reply = True
+                    if event & select.EPOLLIN:
+                        # logger.debug('_primare_reader - pre-read')
+                        c = self._device.read(1)
+                        # logger.debug('_primare_reader - post-read: %s',
+                        #             binascii.hexlify(c))
+
+                        if c:
+                            bytes_read += c
+                            if bytes_read[-leneol:] == eol:
+                                read_reply = True
+                            else:
+                                # logger.debug('_primare_reader - not-eol: %s',
+                                #    binascii.hexlify(bytes_read[-leneol:]))
+                                pass
+                        else:
+                            read_reply = True
             # End of 'Modified version of pySerial's readline'
 
             # logger.debug('Post epoll')
@@ -483,7 +486,7 @@ class PrimareTalker(ApplicationSession):
         # modelname (16)
         # swversion (17)
         if variable_char in ['01', '03', '09', '14', '15', '16', '17']:
-            logger.debug('_primare_reader - index: "%s"',
+            logger.debug('_parse_and_store - index: "%s"',
                          binascii.unhexlify(data))
             if variable_char is '01':
                 self._power_state = int(data, 16)
