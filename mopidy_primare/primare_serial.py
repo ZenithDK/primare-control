@@ -1,28 +1,12 @@
 
 from __future__ import with_statement
 
-from mopidy import exceptions
-
 import binascii
 import logging
-import select
-import serial
 import struct
-import threading
 import time
 
-from twisted.internet.defer import inlineCallbacks
-
-# from autobahn.twisted.util import sleep
-from autobahn.twisted.wamp import ApplicationRunner
-from autobahn.twisted.wamp import ApplicationSession
-# from autobahn.wamp.exception import ApplicationError
-
 logger = logging.getLogger(__name__)
-
-# from mopidy_primare import primare_serial
-# pt = primare_serial.PrimareTalker(port="/dev/ttyUSB0")
-# pt.power_on()
 
 # Primare documentation on their RS232 protocol writes this:
 #  == Command structure ==
@@ -111,7 +95,7 @@ PRIMARE_REPLY = {
     '0A': '',  # dim'
     '0D': '',  # verbose'
     '0E': '',  # menu'
-    #    'YY': '',  # remote_cmd'
+    # 'YY': '',  # remote_cmd'
     '12': '',  # ir_input'
     '13': '',  # recall_factory_settings'
     '14': '',  # inputname'
@@ -140,145 +124,40 @@ PRIMARE_REPLY = {
 # * ...
 
 
-class PrimareTalker(ApplicationSession):
+class PrimareTalker():
 
     """
-    Independent thread which does the communication with the Primare amplifier.
-
-    Since the communication is done in an independent thread, Mopidy won't
-    block other requests while doing time consuming work.
+    Something here
     """
-
-    # Serial link config
-    BAUDRATE = 4800
-    BYTESIZE = 8
-    PARITY = 'N'
-    STOPBITS = 1
 
     # Timeout in seconds used for read/write operations.
     # If you set the timeout too low, the reads will never get complete
     # confirmations and calibration will decrease volume forever. If you set
     # the timeout too high, stuff takes more time. 0.8s seems like a good value
     # for Primare I22.
-    TIMEOUT = 0.8
+    # TIMEOUT = 0.8
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
-    def __init__(self, config=None):
-        ApplicationSession.__init__(self, config)
-        self._config = config
+    def __init__(self, source=None, volume=None):
+        self._bytes_read = bytearray()
+        self._write_cb = None
 
         self._manufacturer = ''
         self._modelname = ''
         self._swversion = ''
         self._inputname = ''
-        self._source = None
-        self._volume = None
+        self._source = source
+        # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
+        self._volume = int(volume) if volume else None
         self._mute_state = False
 
         # Setup logging so that is available
         logging.basicConfig(level=logging.DEBUG)
 
-        self._port = self._config.extra['port']
-        logger.debug("LASSE - port: %s", self._port)
-        print 'LASSE INIT - port: %s' % self._port
-        if 'source' in self._config.extra:
-            self._source = self._config.extra['source']
-        # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
-        if 'volume' in self._config.extra:
-            self._volume = int(self._config.extra['volume'])
-
-        self._alive = True
-        self._device = None
-        self._epoll = select.epoll()
-        self._write_lock = threading.Lock()  # TODO: Kill with fire
-
-        self._setup()
-
-    # Crossbar.io WAMP stuff
-    @inlineCallbacks
-    def onJoin(self, details):  # noqa: N802
-        logger.debug('session ready')
-        print 'session ready'
-
-        # SUBSCRIBE to a topic and receive events
-        def onhello(msg):
-            print("event for 'onhello' received: {}".format(msg))
-
-        sub = yield self.subscribe(onhello, 'com.example.onhello')
-        print("subscribed to topic 'onhello' - sub: %s", sub)
-
-        # REGISTER a procedure for remote calling
-        def add2(x, y):
-            print("add2() called with {} and {}".format(x, y))
-            return x + y
-
-        reg = yield self.register(add2, 'com.example.add2')
-        print("procedure add2() registered - reg: %s", reg)
-
-        # # PUBLISH and CALL every second .. forever
-        # #
-        # counter = 0
-        # while True:
-
-        #     # PUBLISH an event
-        #     #
-        #     yield self.publish('com.example.oncounter', counter)
-        #     print("published to 'oncounter' with counter {}".format(counter))
-        #     counter += 1
-
-        #     # CALL a remote procedure
-        #     #
-        #     try:
-        #         res = yield self.call('com.example.mul2', counter, 3)
-        #         print("mul2() called with result: {}".format(res))
-        #     except ApplicationError as e:
-        #         # ignore errors due to the frontend not yet having
-        #         # registered the procedure we would like to call
-        #         if e.error != 'wamp.error.no_such_procedure':
-        #             raise e
-
-        #     yield sleep(1)
-
-    def onLeave(self, details):
-        print("session left")
-        self.stop_reader()
-        print("killed reader!")
-
-    def onDisconnect(self):
-        print("transport disconnected")
-
     # Private methods
-    def _setup(self):
-        self._open_connection()
-
-        # logger.debug('setup - starting thread')
-        self.thread_read = threading.Thread(target=self._primare_reader)
-        self.thread_read.setName('PrimareSerial')
-        self.thread_read.start()
-
-        self._set_device_to_known_state()
-        self._print_device_info()
-
-    def _open_connection(self):
-        logger.info('Primare amplifier: Connecting through "%s"', self._port)
-        self._device = serial.Serial(
-            port=self._port,
-            baudrate=self.BAUDRATE,
-            bytesize=self.BYTESIZE,
-            parity=self.PARITY,
-            stopbits=self.STOPBITS)
-        # timeout=self.TIMEOUT)
-        if self._device is None:
-            raise exceptions.MixerError("Failed to start serial " +
-                                        "connection to amplifier")
-        else:
-            self._epoll.register(self._device.fileno(), select.EPOLLIN)
-            # logger.info("LASSE - fileno: %d - mask: %s",
-            #            self._device.fileno(), select.EPOLLIN)
-
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
         self.verbose_set(True)
@@ -306,176 +185,70 @@ class PrimareTalker(ApplicationSession):
         self._send_command('volume_down')
         self._send_command('volume_up')
 
-    def _primare_reader(self):
-        """Read data from the serial port
+    def _primare_reader(self, rawdata):
+        """Takes raw data and finds the EOL sequence \x10\x03
 
-        Uses a modified version of pySerial's readline as EOL is '\x10\x03'
-        Also replace any '\x10\x10' sequences with '\x10'.
-        Returns the data received between the STX and DLE+ETX markers
+        Pass the decoded data to the publisher
         """
-        logger.debug('_primare_reader - starting')
-        print '_primare_reader - starting'
 
-        while(self._alive):
-            variable_char = ''
-            data = ''
-            logger.debug('_primare_reader1 - still alive')
-            print '_primare_reader2 - still alive'
+        eol = BYTE_DLE_ETX
+        leneol = len(eol)
 
-            # Read line from device.
-            if not self._device.isOpen():
-                self._device.open()
+        for index, c in enumerate(rawdata):
+            self._bytes_read += c
 
-            eol = BYTE_DLE_ETX
-            # Modified version of pySerial's readline
-            leneol = len(eol)
+            # TODO: Need to do conversion of \x10\x10 before looking for EOL!
+            # Doing it after is actually wrong, move code up here from
+            # _decode_raw_data
+            if self._bytes_read[-leneol:] == eol:
+                logger.debug(
+                    '_primare_reader - decoded: %s',
+                    binascii.hexlify(self._bytes_read))
 
-            bytes_read = bytearray()
-            read_reply = False
-            while not read_reply:
-                # logger.debug('_primare_reader - pre-epoll')
-                print '_primare_reader - pre-epoll'
-                events = self._epoll.poll(2)
-                # logger.debug('_primare_reader - post-epoll(%d): %s',
-                #             len(events), events)
-                print '_primare_reader - post-epoll(%d): %s', len(events), events
+                variable_char, decoded_data = self._decode_raw_data(
+                    self._bytes_read)
+                # We found a data sequence, extract remaining data and start
+                # again
+                rawdata = rawdata[index + 1:]
+                self._bytes_read = bytearray()
 
-                if len(events) > 0:
-                    fileno, event = events[0]
-                    if fileno == self._device.fileno:
-                        logger.warning("epoll - fd: %d, evt: %d", fileno, event)
-                        read_reply = True
-                    if event & select.EPOLLIN:
-                        # logger.debug('_primare_reader - pre-read')
-                        c = self._device.read(1)
-                        # logger.debug('_primare_reader - post-read: %s',
-                        #             binascii.hexlify(c))
-
-                        if c:
-                            bytes_read += c
-                            if bytes_read[-leneol:] == eol:
-                                read_reply = True
-                            else:
-                                # logger.debug('_primare_reader - not-eol: %s',
-                                #    binascii.hexlify(bytes_read[-leneol:]))
-                                pass
-                        else:
-                            read_reply = True
-            # End of 'Modified version of pySerial's readline'
-
-            # logger.debug('Post epoll')
-            if bytes_read:
-                logger.debug('Read: "%s"', binascii.hexlify(bytes_read))
-                byte_string = struct.unpack('c' * len(bytes_read), bytes_read)
-                variable_char = binascii.hexlify(''.join(
-                    byte_string[POS_REPLY_VAR]))
-                byte_string = byte_string[POS_REPLY_DATA]
-
-                # We need to replace double DLE (0x10) with single DLE
-                for byte_pairs in zip(byte_string[0:None:2],
-                                      byte_string[1:None:2]):
-                    # Convert binary tuple to str to ascii
-                    str_pairs = binascii.hexlify(''.join(byte_pairs))
-                    if str_pairs == '1010':
-                        data += '10'
-                    else:
-                        data += str_pairs
-                # Very often we have an odd amount of data which not handled by
-                # the zip above, manually append that one byte
-                if len(byte_string) % 2 != 0:
-                    data += binascii.hexlify(byte_string[-1])
-
-                self._parse_and_store(variable_char, data)
-                self._broadcast_reply(variable_char, data)
-                # TODO: Wait on event so that _send_command is done and then
-                # broadcast to subscribers
-                # But, what then, to do when event received without a command
-                # sent? :-)
-                # For now, just check if mute and volume has changed and update
-                # mixer with that
-                # if PRIMARE_REPLY['03'] != '':
-                #     self._unsolicited_cb('03', PRIMARE_REPLY['03'])
-                #     PRIMARE_REPLY['03'] = ''
-                # if PRIMARE_REPLY['09'] != '':
-                #     self._unsolicited_cb('09', PRIMARE_REPLY['09'])
-                #     PRIMARE_REPLY['09'] = ''
+                self._parse_and_store(variable_char, decoded_data)
+                self._publish_data(variable_char, decoded_data)
             else:
-                logger.debug('Read(0): "%s" - len: %d',
-                             bytes_read, len(bytes_read))
-            # print "_primare_reader - readline, var: '%s' - data: '%s'" %
-            # (variable_char, data)
+                # logger.debug('_primare_reader - not-eol: %s',
+                #    binascii.hexlify(self._bytes_read[-leneol:]))
+                pass
 
-    def _send_command(self, variable, option=None):
-        """Send the specified command to the amplifier
+    def _decode_raw_data(self, rawdata):
+        """Decode raw data from the serial port
 
-        :param variable: String key for the PRIMARE_CMD dict
-        :type variable: string
-        :param option: String value needed for some of the commands
-        :type option: string
-        :rtype: :class:`True` if success, :class:`False` if failure
+        Replace any '\x10\x10' sequences with '\x10'.
+        Returns the variable char and the data received between the STX and
+        DLE+ETX markers
         """
-        # logger.debug('_send_command - pre lock - lock.locked: %s',
-        #             self._write_lock.locked())
+        variable_char = ''
+        data = ''
 
-        with self._write_lock:
-            # START OF WITH BLOCK
-            # logger.debug('_send_command - in lock')
-            command = PRIMARE_CMD[variable][INDEX_CMD]
-            data = PRIMARE_CMD[variable][INDEX_VARIABLE]
-            # reply = PRIMARE_CMD[variable][INDEX_REPLY]
-            if option is not None:
-                logger.debug('_send_command - replace YY with "%s"', option)
-                data = data.replace('YY', option)
-            # logger.debug('_send_command - before write - cmd: "%s", ' +
-            #              'data: "%s", option: "%s"', command, data, option)
-            self._write(command, data)
-            # logger.debug('_send_command - after write - data: %s', data)
-            # if PRIMARE_CMD[variable][INDEX_WAIT] is True:
-            # START BLOCK
-            # self._read_event.wait()
-            # reply_data = PRIMARE_REPLY[reply[0:2]]
-            # PRIMARE_REPLY[reply] = ''
-            # else:
-            # END BLOCK
-            # reply_data = reply
-            # logger.debug('_send_command - after event')
-            # self._read_event.set()
-            # self._read_event.clear()
-        # END OF WITH BLOCK
+        logger.debug('Read: "%s"', binascii.hexlify(rawdata))
+        byte_string = struct.unpack('c' * len(rawdata), rawdata)
+        variable_char = binascii.hexlify(''.join(byte_string[POS_REPLY_VAR]))
+        byte_string = byte_string[POS_REPLY_DATA]
 
-        # logger.debug('_send_command - postlock - reply_data: %s', reply_data)
-
-    def _write(self, cmd_type, data):
-        """Write data to the serial port
-
-        Any occurences of '\x10' must be replaced with '\x10\x10' and add
-        the STX and DLE+ETX markers
-        """
-        # We need to replace single DLE (0x10) with double DLE to discern it
-        data_safe = ''
-        for index in range(0, len(data) - 1, 2):
-            pair = data[index:index + 2]
-            if pair == '10':
-                data_safe += '1010'
+        # We need to replace double DLE (0x10) with single DLE
+        for byte_pairs in zip(byte_string[0:None:2],
+                              byte_string[1:None:2]):
+            # Convert binary tuple to str to ascii
+            str_pairs = binascii.hexlify(''.join(byte_pairs))
+            if str_pairs == '1010':
+                data += '10'
             else:
-                data_safe += pair
-        # Convert ascii string to binary
-        binary_variable = binascii.unhexlify(data_safe)
-        # logger.debug(
-        #    '_write - cmd_type: "%s", data_safe: "%s"',
-        #    cmd_type, data_safe)
+                data += str_pairs
+        # Very often we have an odd amount of data which not handled by
+        # the zip above, manually append that one byte
+        if len(byte_string) % 2 != 0:
+            data += binascii.hexlify(byte_string[-1])
 
-        binary_data = BYTE_STX
-        binary_data += BYTE_WRITE if cmd_type == 'W' else BYTE_READ
-        binary_data += binary_variable + BYTE_DLE_ETX
-
-        # Write data to device.
-        if not self._device.isOpen():
-            self._device.open()
-        self._device.write(binary_data)
-        logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
-        # Things are wonky if we try to write too quickly
-        time.sleep(0.06)
+        return variable_char, data
 
     def _parse_and_store(self, variable_char, data):
         # We want info on:
@@ -486,7 +259,7 @@ class PrimareTalker(ApplicationSession):
         # modelname (16)
         # swversion (17)
         if variable_char in ['01', '03', '09', '14', '15', '16', '17']:
-            logger.debug('_parse_and_store - index: "%s"',
+            logger.debug('_parse_and_store - index: "%s" - %s', variable_char,
                          binascii.unhexlify(data))
             if variable_char is '01':
                 self._power_state = int(data, 16)
@@ -515,20 +288,66 @@ class PrimareTalker(ApplicationSession):
             elif variable_char is '17':
                 self._manufacturer = data
 
-    def _broadcast_reply(self, variable_char, data):
+    def _publish_data(self, variable_char, data):
         pass
 
+    def _send_command(self, variable, option=None):
+        """Send the specified command to the amplifier
+
+        :param variable: String key for the PRIMARE_CMD dict
+        :type variable: string
+        :param option: String value needed for some of the commands
+        :type option: string
+        :rtype: :class:`True` if success, :class:`False` if failure
+        """
+        # logger.debug('_send_command - in lock')
+        command = PRIMARE_CMD[variable][INDEX_CMD]
+        data = PRIMARE_CMD[variable][INDEX_VARIABLE]
+        # reply = PRIMARE_CMD[variable][INDEX_REPLY]
+        if option is not None:
+            logger.debug('_send_command - replace YY with "%s"', option)
+            data = data.replace('YY', option)
+        # logger.debug('_send_command - before write - cmd: "%s", ' +
+        #              'data: "%s", option: "%s"', command, data, option)
+        self._write(command, data)
+        # logger.debug('_send_command - after write - data: %s', data)
+
+    def register_mcu_write_cb(self, write_cb):
+        self._write_cb = write_cb
+
+    def _write(self, cmd_type, data):
+        """Write data to the serial port
+
+        Any occurences of '\x10' must be replaced with '\x10\x10' and add
+        the STX and DLE+ETX markers
+        """
+        # We need to replace single DLE (0x10) with double DLE to discern it
+        data_safe = ''
+        for index in range(0, len(data) - 1, 2):
+            pair = data[index:index + 2]
+            if pair == '10':
+                data_safe += '1010'
+            else:
+                data_safe += pair
+        # Convert ascii string to binary
+        binary_variable = binascii.unhexlify(data_safe)
+        # logger.debug(
+        #    '_write - cmd_type: "%s", data_safe: "%s"',
+        #    cmd_type, data_safe)
+
+        binary_data = BYTE_STX
+        binary_data += BYTE_WRITE if cmd_type == 'W' else BYTE_READ
+        binary_data += binary_variable + BYTE_DLE_ETX
+
+        logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
+        self._write_cb(binary_data)
+        # Things are wonky if we try to write too quickly
+        time.sleep(0.06)
+
     # Public methods
-    def stop_reader(self):
-        print "stop_reader - 1"
-        self._alive = False
-        # self._send_command('verbose_toggle')
-        self._epoll.unregister(self._device.fileno())
-        self._device.close()
-        print "stop_reader - 2 - post unreg"
-        self.thread_read.join()
-        print "stop_reader - 3 - post join"
-        logger.info("Primare reader thread finished...exiting")
+    def setup(self):
+        self._set_device_to_known_state()
+        self._print_device_info()
 
     def power_on(self):
         """Power on the Primare amplifier."""
@@ -715,18 +534,3 @@ class PrimareTalker(ApplicationSession):
     def inputname_specific_get(self, input):
         if input >= 0 and input <= 7:
             self._send_command('inputname_specific_get', '%02d' % input)
-
-
-if __name__ == '__main__':
-    logger.debug("LASSE - pre WAMP")
-    try:
-        params = {'port': "/dev/ttyUSB0"}
-        runner = ApplicationRunner(url=u"ws://localhost:8998/ws",
-                                   realm=u"realm1",
-                                   debug=True, debug_app=True,
-                                   debug_wamp=True, extra=params)
-        runner.run(PrimareTalker)
-    finally:
-        # TODO: Send 'stop()' RPC to PrimareTalker to shut down nicely
-        logger.debug("LASSE - post WAMP")
-        print 'LASSE post WAMP'
