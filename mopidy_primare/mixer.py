@@ -2,6 +2,11 @@
 
 from __future__ import unicode_literals
 
+from twisted.internet.defer import inlineCallbacks
+from twisted.protocols.basic import LineReceiver
+
+from autobahn.twisted.wamp import ApplicationSession
+
 from mopidy import mixer
 
 import logging
@@ -97,4 +102,4 @@ class PrimareMixer(pykka.ThreadingActor, mixer.Mixer):
         self._primare = primare_serial.PrimareTalker(
             unsolicited_cb=self.actor_ref.proxy().unsolicited_updates,
             port=self.port, source=self.source, volume=self.volume
-            )
+        )

@@ -44,6 +44,10 @@ class McuProtocol(LineReceiver):
         self.setRawMode()
         self._rawBuffer = bytearray()
 
+    def wrapSendLine(self, line):
+        print('LASSE wrapLine: %s', line)
+        self.sendLine(line)
+
     def connectionMade(self):
         print('Serial port connected.')
 
@@ -68,8 +72,8 @@ class McuProtocol(LineReceiver):
         #     print('Unable to parse value {0}'.format(line))
 
     def rawDataReceived(self, data):
-        # if self._debug:
-        #    print("Serial RawRX({0}): {1}".format(len(data), data))
+        if self._debug:
+            print("Serial RawRX({0}): {1}".format(len(data), data))
         self._primare_talker._primare_reader(data)
 
     def randomFunc(self, turn_on):
@@ -104,7 +108,8 @@ class McuComponent(ApplicationSession):
         debug = self.config.extra['debug']
 
         serial_protocol = McuProtocol(self, self._primare_talker, debug)
-        self._primare_talker.register_mcu_write_cb(serial_protocol.sendLine)
+        self._primare_talker.register_mcu_write_cb(
+            serial_protocol.wrapSendLine)
 
         print('About to open serial port {0} [{1} baud] ..'.format(port,
                                                                    baudrate))
