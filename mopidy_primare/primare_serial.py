@@ -63,6 +63,7 @@ PRIMARE_CMD = {
     'input_next': ['W', '0201', '02', True],
     'input_prev': ['W', '02FF', '02', True],
     'volume_set': ['W', '83YY', '03YY', True],
+    'volume_get': ['W', '0300', '03', True],
     'volume_up': ['W', '0301', '03', True],
     'volume_down': ['W', '03FF', '03', True],
     'balance_adjust': ['W', '04YY', '04', True],
@@ -87,26 +88,23 @@ PRIMARE_CMD = {
 }
 
 PRIMARE_REPLY = {
-    '01': '',  # power'
-    '02': '',  # input'
-    '03': '',  # volume'
-    '04': '',  # balance'
-    '09': '',  # mute'
-    '0A': '',  # dim'
-    '0D': '',  # verbose'
-    '0E': '',  # menu'
-    # 'YY': '',  # remote_cmd'
-    '12': '',  # ir_input'
-    '13': '',  # recall_factory_settings'
-    '14': '',  # inputname'
-    '15': '',  # manufacturer'
-    '16': '',  # modelname'
-    '17': ''  # swversion'
+    '01': 'power',
+    '02': 'input',
+    '03': 'volume',
+    '04': 'balance',
+    '09': 'mute',
+    '0a': 'dim',
+    '0d': 'verbose',
+    '0e': 'menu',
+    '12': 'ir_input',
+    '13': 'recall_factory_settings',
+    '14': 'inputname',
+    '15': 'manufacturer',
+    '16': 'modelname',
+    '17': 'swversion'
 }
 # TODO:
-# FIXING Continouosly update model based on what the reader thread sends up
 # FIXING Better reply handling than table?
-# FIXING Remove result validation or use it in PRIMARE_CMD dict
 # * Better error handling
 #       After suspend/resume, if volume up/down fails (or similar),
 #       try turning amp on
@@ -150,6 +148,7 @@ class PrimareTalker():
         self._swversion = ''
         self._inputname = ''
         self._source = source
+        # TODO: Kill caching of volume - just get it every time
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         self._volume = int(volume) if volume else None
         self._mute_state = False
@@ -169,7 +168,7 @@ class PrimareTalker():
         if self._volume:
             self.volume_set(self._volume)
         else:
-            self._get_current_volume()
+            self.volume_get()
 
     def _print_device_info(self):
         self.manufacturer_get()
@@ -178,12 +177,18 @@ class PrimareTalker():
         # We always get inputname last, this represents our initialization
         self.inputname_current_get()
 
-    def _get_current_volume(self):
-        """Read current volume by doing volume_down and then
-        volume_up and use reply from that to know the current volume
-        The reply from the amplifier is in hex, so convert to decimal"""
-        self._send_command('volume_down')
-        self._send_command('volume_up')
+    def _print_device_info1(self):
+        self.manufacturer_get()
+
+    def _print_device_info2(self):
+        self.modelname_get()
+
+    def _print_device_info3(self):
+        self.swversion_get()
+
+    def _print_device_info4(self):
+        # We always get inputname last, this represents our initialization
+        self.inputname_current_get()
 
     def _primare_reader(self, rawdata):
         """Takes raw data and finds the EOL sequence \x10\x03
@@ -201,9 +206,9 @@ class PrimareTalker():
             # Doing it after is actually wrong, move code up here from
             # _decode_raw_data
             if self._bytes_read[-leneol:] == eol:
-                logger.debug(
-                    '_primare_reader - decoded: %s',
-                    binascii.hexlify(self._bytes_read))
+                # logger.debug(
+                #    '_primare_reader - decoded: %s',
+                #    binascii.hexlify(self._bytes_read))
 
                 variable_char, decoded_data = self._decode_raw_data(
                     self._bytes_read)
@@ -229,7 +234,7 @@ class PrimareTalker():
         variable_char = ''
         data = ''
 
-        logger.debug('Read: "%s"', binascii.hexlify(rawdata))
+        # logger.debug('Read: "%s"', binascii.hexlify(rawdata))
         byte_string = struct.unpack('c' * len(rawdata), rawdata)
         variable_char = binascii.hexlify(''.join(byte_string[POS_REPLY_VAR]))
         byte_string = byte_string[POS_REPLY_DATA]
@@ -248,27 +253,24 @@ class PrimareTalker():
         if len(byte_string) % 2 != 0:
             data += binascii.hexlify(byte_string[-1])
 
+        logger.debug('Read(%s) = %s (%s)', PRIMARE_REPLY[variable_char], data,
+                     binascii.hexlify(rawdata))
         return variable_char, data
 
     def _parse_and_store(self, variable_char, data):
-        # We want info on:
-        # power (01)
-        # volume (03)
-        # mute (09)
-        # manufacturer (15)
-        # modelname (16)
-        # swversion (17)
         if variable_char in ['01', '03', '09', '14', '15', '16', '17']:
-            logger.debug('_parse_and_store - index: "%s" - %s', variable_char,
-                         binascii.unhexlify(data))
-            if variable_char is '01':
+            if variable_char in ['14', '15', '16', '17']:
+                logger.debug('_parse_and_store - index: "%s" - %s',
+                             variable_char,
+                             binascii.unhexlify(data))
+            if variable_char == '01':
                 self._power_state = int(data, 16)
-            elif variable_char is '03':
+            elif variable_char == '03':
                 self._volume = int(data, 16)
-            elif variable_char is '09':
+            elif variable_char == '09':
                 self._mute_state = int(data, 16)
-            elif variable_char is '14':
-                if self._inputname is '':
+            elif variable_char == '14':
+                if self._inputname == '':
                     self._inputname = data
                     logger.info("""Connected to:
                                 Manufacturer:  %s
@@ -281,12 +283,12 @@ class PrimareTalker():
                                 binascii.unhexlify(self._inputname))
                 else:
                     self._inputname = data
-            elif variable_char is '15':
+            elif variable_char == '15':
                 self._manufacturer = data
-            elif variable_char is '16':
-                self._manufacturer = data
-            elif variable_char is '17':
-                self._manufacturer = data
+            elif variable_char == '16':
+                self._modelname = data
+            elif variable_char == '17':
+                self._swversion = data
 
     def _publish_data(self, variable_char, data):
         pass
@@ -303,14 +305,11 @@ class PrimareTalker():
         # logger.debug('_send_command - in lock')
         command = PRIMARE_CMD[variable][INDEX_CMD]
         data = PRIMARE_CMD[variable][INDEX_VARIABLE]
-        # reply = PRIMARE_CMD[variable][INDEX_REPLY]
         if option is not None:
-            logger.debug('_send_command - replace YY with "%s"', option)
+            # logger.debug('_send_command - replace YY with "%s"', option)
             data = data.replace('YY', option)
-        # logger.debug('_send_command - before write - cmd: "%s", ' +
-        #              'data: "%s", option: "%s"', command, data, option)
+        logger.debug('_send_command(%s), data: "%s"', variable, data)
         self._write(command, data)
-        # logger.debug('_send_command - after write - data: %s', data)
 
     def register_mcu_write_cb(self, write_cb):
         self._write_cb = write_cb
@@ -339,7 +338,7 @@ class PrimareTalker():
         binary_data += BYTE_WRITE if cmd_type == 'W' else BYTE_READ
         binary_data += binary_variable + BYTE_DLE_ETX
 
-        logger.debug('WriteHex(S): %s', binascii.hexlify(binary_data))
+        logger.debug('WriteHex: %s', binascii.hexlify(binary_data))
         self._write_cb(binary_data)
         # Things are wonky if we try to write too quickly
         time.sleep(0.06)
@@ -396,8 +395,7 @@ class PrimareTalker():
 
         :rtype: int in range [0..100] or :class:`None`
         """
-        logger.debug("LASSE - volume_get: %d", self._volume)
-        return self._volume
+        self._send_command('volume_get')
 
     def volume_set(self, volume):
         """

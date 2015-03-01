@@ -17,6 +17,8 @@
 ###############################################################################
 
 
+import time
+
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.serialport import SerialPort
 from twisted.protocols.basic import LineReceiver
@@ -78,9 +80,9 @@ class McuProtocol(LineReceiver):
             payload = b'1'
         else:
             payload = b'0'
-            if self._debug:
-                print("Serial TX: {0}".format(payload))
-                self.transport.write(payload)
+        if self._debug:
+            print("Serial TX: {0}".format(payload))
+            self.transport.write(payload)
 
 
 class McuComponent(ApplicationSession):
@@ -122,7 +124,18 @@ class McuComponent(ApplicationSession):
             serialPort = SerialPort(
                 serial_protocol, port, reactor, baudrate=baudrate)
 
-            self._primare_talker.setup()
+            # self._primare_talker.setup()
+            # yield self._primare_talker._set_device_to_known_state()
+            yield self._primare_talker._print_device_info1()
+            print("Sleep a while")
+            time.sleep(0.6)
+            yield self._primare_talker._print_device_info2()
+            print("Sleep a while")
+            time.sleep(0.6)
+            yield self._primare_talker._print_device_info3()
+            print("Sleep a while")
+            time.sleep(0.6)
+            yield self._primare_talker._print_device_info4()
 
         except Exception as e:
             print('Could not open serial port: {0}'.format(e))
@@ -148,7 +161,7 @@ if __name__ == '__main__':
                             300, 1200, 2400, 4800, 9600, 19200, 57600, 115200],
                         help='Serial port baudrate.')
 
-    parser.add_argument("--port", type=str, default='2',
+    parser.add_argument("--port", type=str, default='/dev/ttyUSB0',
                         help='Serial port to use (e.g. 3 for a COM port on \
                         Windows, /dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 \
                         for Serial-over-USB on RaspberryPi.')
@@ -199,7 +212,7 @@ if __name__ == '__main__':
     params = {
         'port': args.port, 'baudrate': args.baudrate, 'debug': args.debug}
     runner = ApplicationRunner(router, u"realm1", extra=params,
-                               #standalone=not args.router,
+                               # standalone=not args.router,
                                debug=args.debug, debug_wamp=args.debug,
                                debug_app=args.debug)
 
