@@ -6,6 +6,10 @@ import logging
 import struct
 import time
 
+#from twisted.logger import Logger
+
+#logger = Logger()
+
 logger = logging.getLogger(__name__)
 
 # Primare documentation on their RS232 protocol writes this:
@@ -38,8 +42,9 @@ logger = logging.getLogger(__name__)
 #  == Example ==
 #  The specific variables and commands will be defined later, here are
 #  examples on what the commands looks like in bytes.
-#  Command to toggle verbose setting. Command is write, variable is 13 (0x0d)
-#  and value is 0.
+#  This is an example of a command to toggle verbose setting.
+#  Command is write (0x57), variable is 13 (0x0d)
+#  and value is 0. The footer is x10 x03
 #  0x02 0x57 0x0xd 0x00 0x10 0x03
 POS_STX = slice(0, 1)
 POS_DLE_ETX = slice(-2, None)
@@ -71,7 +76,7 @@ PRIMARE_CMD = {
     'mute_toggle': ['W', '0900', '09', True],
     'mute_set': ['W', '89YY', '09YY', True],
     'dim_cycle': ['W', '0A00', '0A', True],
-    'dim_set': ['W', '0AYY', '0AYY', True],
+    'dim_set': ['W', '8AYY', '0AYY', True],
     'verbose_toggle': ['W', '0D00', '0D', True],
     'verbose_set': ['W', '8DYY', '0DYY', True],
     'menu_toggle': ['W', '0E01', '0E', True],
@@ -123,7 +128,6 @@ PRIMARE_REPLY = {
 
 
 class PrimareTalker():
-
     """
     Something here
     """
@@ -139,19 +143,19 @@ class PrimareTalker():
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
-    def __init__(self, source=None, volume=None):
+    def __init__(self, source=None, volume=None, writer=None):
         self._bytes_read = bytearray()
-        self._write_cb = None
+        self._write_cb = writer
 
+        self._boot_print = True
         self._manufacturer = ''
         self._modelname = ''
         self._swversion = ''
         self._inputname = ''
         self._source = source
-        # TODO: Kill caching of volume - just get it every time
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
-        self._volume = int(volume) if volume else None
-        self._mute_state = False
+        if volume:
+            self.volume_set(volume)
 
         # Setup logging so that is available
         logging.basicConfig(level=logging.DEBUG)
@@ -165,10 +169,6 @@ class PrimareTalker():
         if self._source is not None:
             self.input_set(self._source)
         self.mute_set(False)
-        if self._volume:
-            self.volume_set(self._volume)
-        else:
-            self.volume_get()
 
     def _print_device_info(self):
         self.manufacturer_get()
@@ -177,24 +177,8 @@ class PrimareTalker():
         # We always get inputname last, this represents our initialization
         self.inputname_current_get()
 
-    def _print_device_info1(self):
-        self.manufacturer_get()
-
-    def _print_device_info2(self):
-        self.modelname_get()
-
-    def _print_device_info3(self):
-        self.swversion_get()
-
-    def _print_device_info4(self):
-        # We always get inputname last, this represents our initialization
-        self.inputname_current_get()
-
     def _primare_reader(self, rawdata):
-        """Takes raw data and finds the EOL sequence \x10\x03
-
-        Pass the decoded data to the publisher
-        """
+        """Takes raw data and finds the EOL sequence \x10\x03"""
 
         eol = BYTE_DLE_ETX
         leneol = len(eol)
@@ -206,9 +190,9 @@ class PrimareTalker():
             # Doing it after is actually wrong, move code up here from
             # _decode_raw_data
             if self._bytes_read[-leneol:] == eol:
-                # logger.debug(
-                #    '_primare_reader - decoded: %s',
-                #    binascii.hexlify(self._bytes_read))
+                logger.debug(
+                   '_primare_reader - decoded: %s',
+                   binascii.hexlify(self._bytes_read))
 
                 variable_char, decoded_data = self._decode_raw_data(
                     self._bytes_read)
@@ -218,10 +202,9 @@ class PrimareTalker():
                 self._bytes_read = bytearray()
 
                 self._parse_and_store(variable_char, decoded_data)
-                self._publish_data(variable_char, decoded_data)
             else:
                 # logger.debug('_primare_reader - not-eol: %s',
-                #    binascii.hexlify(self._bytes_read[-leneol:]))
+                #              binascii.hexlify(self._bytes_read[-leneol:]))
                 pass
 
     def _decode_raw_data(self, rawdata):
@@ -258,20 +241,17 @@ class PrimareTalker():
         return variable_char, data
 
     def _parse_and_store(self, variable_char, data):
-        if variable_char in ['01', '03', '09', '14', '15', '16', '17']:
+        if variable_char in ['01', '14', '15', '16', '17']:
             if variable_char in ['14', '15', '16', '17']:
                 logger.debug('_parse_and_store - index: "%s" - %s',
                              variable_char,
                              binascii.unhexlify(data))
             if variable_char == '01':
                 self._power_state = int(data, 16)
-            elif variable_char == '03':
-                self._volume = int(data, 16)
-            elif variable_char == '09':
-                self._mute_state = int(data, 16)
             elif variable_char == '14':
-                if self._inputname == '':
-                    self._inputname = data
+                self._inputname = data
+                if self._boot_print == True:
+                    self._boot_print = False
                     logger.info("""Connected to:
                                 Manufacturer:  %s
                                 Model:         %s
@@ -281,17 +261,12 @@ class PrimareTalker():
                                 binascii.unhexlify(self._modelname),
                                 binascii.unhexlify(self._swversion),
                                 binascii.unhexlify(self._inputname))
-                else:
-                    self._inputname = data
             elif variable_char == '15':
                 self._manufacturer = data
             elif variable_char == '16':
                 self._modelname = data
             elif variable_char == '17':
                 self._swversion = data
-
-    def _publish_data(self, variable_char, data):
-        pass
 
     def _send_command(self, variable, option=None):
         """Send the specified command to the amplifier
@@ -302,17 +277,12 @@ class PrimareTalker():
         :type option: string
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        # logger.debug('_send_command - in lock')
         command = PRIMARE_CMD[variable][INDEX_CMD]
         data = PRIMARE_CMD[variable][INDEX_VARIABLE]
         if option is not None:
-            # logger.debug('_send_command - replace YY with "%s"', option)
             data = data.replace('YY', option)
         logger.debug('_send_command(%s), data: "%s"', variable, data)
         self._write(command, data)
-
-    def register_mcu_write_cb(self, write_cb):
-        self._write_cb = write_cb
 
     def _write(self, cmd_type, data):
         """Write data to the serial port
@@ -330,9 +300,6 @@ class PrimareTalker():
                 data_safe += pair
         # Convert ascii string to binary
         binary_variable = binascii.unhexlify(data_safe)
-        # logger.debug(
-        #    '_write - cmd_type: "%s", data_safe: "%s"',
-        #    cmd_type, data_safe)
 
         binary_data = BYTE_STX
         binary_data += BYTE_WRITE if cmd_type == 'W' else BYTE_READ
@@ -365,20 +332,17 @@ class PrimareTalker():
         self._send_command('power_toggle')
 
     def input_set(self, source):
-        """Set the current input used by the Primare amplifier.
-
-        :rtype: name of current input if success, empty string if failure
-        """
-        self._send_command('input_set', '%02X' % int(source))
+        """Set the current input used by the Primare amplifier."""
+        self._send_command('input_set', '{:02X}'.format(int(source) % 8))
         self.inputname_current_get()
 
     def input_next(self):
-        # TODO
-        pass
+        self._send_command('input_next')
+        self.inputname_current_get()
 
     def input_prev(self):
-        # TODO
-        pass
+        self._send_command('input_prev')
+        self.inputname_current_get()
 
     def volume_get(self):
         """
@@ -406,9 +370,9 @@ class PrimareTalker():
         :rtype: :class:`True` if success, :class:`False` if failure
         """
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
-        logger.debug("LASSE - target volume: %d", target_primare_volume)
+        logger.debug("volume_set - target volume: {}".format(target_primare_volume))
         self._send_command('volume_set',
-                           '%02X' % target_primare_volume)
+                           '{:02X}'.format(target_primare_volume))
         # There's a crazy bug where setting the volume to 65 and above will
         # generate a reply indicating a volume of 1 less!?
         # Hence the work-around
@@ -423,15 +387,9 @@ class PrimareTalker():
 
     def volume_up(self):
         self._send_command('volume_up')
-        # if reply:
-        #    self._volume += 1
-        # return self._volume.get()
 
     def volume_down(self):
         self._send_command('volume_down')
-        # if reply:
-        #    self._volume -= 1
-        # return self._volume.get()
 
     def balance_adjust(self, adjustment):
         # TODO
@@ -443,21 +401,12 @@ class PrimareTalker():
 
     def mute_toggle(self):
         self._send_command('mute_toggle')
-        # if reply == '01':
-        #    self._mute_state = True
-        #    return True
-        # else:
-        #    self._mute_state = False
-        #    return False
 
     def mute_get(self):
         """
         Get mute state of the mixer.
-
-        :rtype: :class:`True` if muted, :class:`False` if unmuted,
-        :class:`None` if unknown.
         """
-        return self._mute_state
+        self._send_command('mute_toggle')
 
     def mute_set(self, mute):
         """
@@ -469,53 +418,40 @@ class PrimareTalker():
         """
         mute_value = '01' if mute is True else '00'
         self._send_command('mute_set', mute_value)
-        # if reply == '01':
-        #    self._mute_state = True
-        #    return True
-        # else:
-        #    self._mute_state = False
-        #    return False
 
     def dim_cycle(self):
-        # TODO
-        pass
+        self._send_command('dim_cycle')
 
     def dim_set(self, level):
-        # TODO
-        pass
+        if level >= 0:
+            self._send_command('dim_set', '{:02X}'.format(int(level) % 4))
 
     def verbose_toggle(self):
         self._send_command('verbose_toggle')
 
     def verbose_set(self, verbose):
-        if verbose:
-            self._send_command('verbose_set', '01')
-        else:
-            self._send_command('verbose_set', '00')
+        verbose_value = '01' if verbose is True else '00'
+        self._send_command('verbose_set', verbose_value)
 
-    def menu_toggle(self, verbose):
-        # TODO
-        pass
+    def menu_toggle(self):
+        self._send_command('menu_toggle')
 
     def menu_set(self, menu):
-        # TODO
-        pass
+        self._send_command('menu_set', '{:02X}'.format(int(menu)))
 
     def remote_cmd(self, cmd):
         # TODO
         pass
 
     def ir_input_toggle(self):
-        # TODO
-        pass
+        self._send_command('ir_input_toggle')
 
     def ir_input_set(self, ir_input):
-        # TODO
-        pass
+        ir_value = '01' if ir_input is True else '00'
+        self._send_command('ir_input_set', ir_value)
 
     def recall_factory_settings(self):
-        # TODO
-        pass
+        self._send_command('recall_factory_settings')
 
     def manufacturer_get(self):
         self._send_command('manufacturer_get')
@@ -530,5 +466,5 @@ class PrimareTalker():
         self._send_command('inputname_current_get')
 
     def inputname_specific_get(self, input):
-        if input >= 0 and input <= 7:
-            self._send_command('inputname_specific_get', '%02d' % input)
+        if input >= 0:
+            self._send_command('inputname_specific_get', '{:02X}'.format((int(input) % 8)))
