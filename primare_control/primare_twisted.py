@@ -52,9 +52,6 @@ class PrimareProtocol(LineReceiver):
         self.setRawMode()
         self._rawBuffer = bytearray()
 
-    # def connectionMade(self):
-    #     logger.info('Serial port connected.')
-
     def rawDataReceived(self, data):
         """Handle raw data received by Twisted's SerialPort."""
         if self._debug:
@@ -62,21 +59,55 @@ class PrimareProtocol(LineReceiver):
         _primare_talker._primare_reader(data)
 
 
-@click.group()
+class DefaultCmdGroup(click.Group):
+    def list_commands(self, ctx):
+        rv = [method for method in dir(PrimareController) if not method.startswith('_')]
+        rv.append('interactive')
+        rv.sort()
+        return rv
+
+    def get_command(self, ctx, name):
+        @click.pass_context
+        def subcommand(ctx):
+            try:
+                method = getattr(PrimareController, name)
+                # method(ctx.obj["argument"])
+                #click.echo("LASSE: {}".format(ctx.obj["value"]))
+                method(_primare_talker)
+            except KeyboardInterrupt:
+                logger.info("User aborted")
+            except TypeError as e:
+                logger.error(e)
+            finally:
+                # in a non-main thread:
+                reactor.callFromThread(reactor.stop)
+
+        # attach doc from original callable so it will appear
+        # in CLI output
+        if name == "interactive":
+            cmd = click.Group.get_command(self, ctx, 'interactive')
+        else:
+            subcommand.__doc__ = getattr(PrimareController, name).__doc__
+            cmd = click.command(name)(subcommand)
+        return cmd
+
+
+@click.command(cls=DefaultCmdGroup)
+@click.pass_context
 @click.option("--amp-info",
               default=False,
               is_flag=True,
               help="Retrieve and print amplifier information")
 @click.option("--baudrate",
               default=4800,
-              type=click.Choice([300,
-                                 1200,
-                                 2400,
-                                 4800,
-                                 9600,
-                                 19200,
-                                 57600,
-                                 115200]),
+              type=click.Choice(['300',
+                                 '1200',
+                                 '2400',
+                                 '4800',
+                                 '9600',
+                                 '19200',
+                                 '57600',
+                                 '115200']),
               help="Serial port baudrate.")
 @click.option("--debug",
               "-d",
@@ -89,9 +120,12 @@ class PrimareProtocol(LineReceiver):
               help="Serial port to use (e.g. 3 for a COM port on Windows, "
               "/dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 for Serial-over-USB "
               "on RaspberryPi.")
-def cli(amp_info, baudrate, debug, port):
+def cli(ctx, amp_info, baudrate, debug, port):
     """Prototype."""
     global _primare_talker
+
+    ctx.obj = {}
+    #ctx.obj["value"] = value
 
     try:
         # on Windows, we need port to be an integer
@@ -120,58 +154,29 @@ def cli(amp_info, baudrate, debug, port):
     logger.info("After thread start, end of cli()")
 
 
-class PrimareCommands(click.Group):
-    """Fuck off."""
-
-    def list_commands(self, ctx, cmd_name):
-        """Fuck off."""
-        click.echo(ctx.args)
-        cmd = click.Group.get_command(self, ctx, cmd_name)
-        if cmd is not None:
-            return cmd
-        else:
-            return click.Group.get_command(self, ctx, 'interactive')
-        # rv = []
-        # for method in dir(_primare_talker):
-        #     if not method.beginswith('_'):
-        #         rv.append(method)
-        # rv.sort()
-        # logger.info("Dynamic methods: {}".format(rv))
-        # return rv
-
-    # def get_command(self, ctx, name):
-    #     """Fuck off."""
-    #     return getattr(_primare_talker, name)
-
-
-@click.command(cls=PrimareCommands)
-@click.pass_context
-def main(ctx):
-    """Blah."""
-    pass
-
-# @cli.command()
-# def volume_up():
-#     """Increase the volume on the amplifier."""
-#     _primare_talker.volume_up()
-#     # in a non-main thread:
-#     reactor.callFromThread(reactor.stop)
-
-
 @cli.command()
 def interactive():
-    """Waah."""
+    """Start interactive shell for controlling a Primare amplifier.
+
+    Press enter (blank line), 'q' or 'quit' to exit.
+
+    For a list of available commands, type 'help'"""
+    method_list = [(method, getattr(PrimareController, method).__doc__.splitlines()[0]) for method in dir(PrimareController) if not method.startswith('_')]
+    help_string = """To exit, press enter (blank line) or type 'q' or 'quit'.\n
+Available commands are:
+{}""".format('\n'.join("  {} {}".format(method.ljust(25), doc) for method, doc in method_list))
     try:
+        logger.info(help_string)
         nb = ''
         while True:
             nb = raw_input('Cmd: ').strip()
-            if not nb or nb == 'q':
+            if not nb or nb == 'q' or nb == 'quit':
                 logger.info("Quit: '{}'".format(nb))
                 break
+            elif nb == 'help':
+                logger.info(help_string)
             else:
                 parsed_cmd = nb.split()
-                logger.info("Input rcv: {} - len: {}".format(parsed_cmd,
-                                                             len(parsed_cmd)))
                 command = getattr(_primare_talker, parsed_cmd[0], None)
                 if command:
                     try:
@@ -196,10 +201,5 @@ def interactive():
     reactor.callFromThread(reactor.stop)
 
 
-# cli_dynamic = PrimareCommands(help='Blah blah')
-
-# cmds = click.CommandCollection(sources=[cli, cli_dynamic])
-
-
 if __name__ == '__main__':
-    main()
+    cli()

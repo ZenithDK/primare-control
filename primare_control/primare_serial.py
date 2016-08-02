@@ -1,4 +1,4 @@
-"""Primare amplier control.
+"""Primare amplifier control.
 
 This module allows you to control your Primare I22 and I32 amplifier from the
 command line using Primare's binary protocol via the RS232 port on the
@@ -138,7 +138,7 @@ class PrimareController():
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
-    VOLUME_LEVELS = 79
+    _VOLUME_LEVELS = 79
 
     def __init__(self, source=None, volume=None, writer=None):
         """Initialization."""
@@ -348,8 +348,7 @@ class PrimareController():
         self.inputname_current_get()
 
     def volume_get(self):
-        """
-        Get volume level of the mixer on a linear scale from 0 to 100.
+        """Get volume level of the mixer on a linear scale from 0 to 100.
 
         Example values:
 
@@ -365,8 +364,7 @@ class PrimareController():
         self._send_command('volume_get')
 
     def volume_set(self, volume):
-        """
-        Set volume level of the amplifier.
+        """Set volume level of the amplifier.
 
         :param volume: Volume in the range [0..100]
         :type volume: int
@@ -419,8 +417,7 @@ class PrimareController():
         self._send_command('mute_toggle')
 
     def mute_set(self, mute):
-        """
-        Enable or disable mute on device.
+        """Enable or disable mute on device.
 
         :param mute: :class:`True` to mute, :class:`False` to unmute
         :type mute: bool
