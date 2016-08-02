@@ -1,3 +1,9 @@
+"""Primare amplier control.
+
+This module allows you to control your Primare I22 and I32 amplifier from the
+command line using Primare's binary protocol via the RS232 port on the
+amplifier.
+"""
 
 from __future__ import with_statement
 
@@ -6,9 +12,9 @@ import logging
 import struct
 import time
 
-#from twisted.logger import Logger
+# from twisted.logger import Logger
 
-#logger = Logger()
+# logger = Logger()
 
 logger = logging.getLogger(__name__)
 
@@ -127,23 +133,15 @@ PRIMARE_REPLY = {
 # * ...
 
 
-class PrimareTalker():
-    """
-    Something here
-    """
-
-    # Timeout in seconds used for read/write operations.
-    # If you set the timeout too low, the reads will never get complete
-    # confirmations and calibration will decrease volume forever. If you set
-    # the timeout too high, stuff takes more time. 0.8s seems like a good value
-    # for Primare I22.
-    # TIMEOUT = 0.8
+class PrimareController():
+    """This class provides methods for controlling a Primare amplifier."""
 
     # Number of volume levels the amplifier supports.
     # Primare amplifiers have 79 levels
     VOLUME_LEVELS = 79
 
     def __init__(self, source=None, volume=None, writer=None):
+        """Initialization."""
         self._bytes_read = bytearray()
         self._write_cb = writer
 
@@ -178,8 +176,7 @@ class PrimareTalker():
         self.inputname_current_get()
 
     def _primare_reader(self, rawdata):
-        """Takes raw data and finds the EOL sequence \x10\x03"""
-
+        r"""Take raw data and finds the EOL sequence \x10\x03."""
         eol = BYTE_DLE_ETX
         leneol = len(eol)
 
@@ -190,9 +187,8 @@ class PrimareTalker():
             # Doing it after is actually wrong, move code up here from
             # _decode_raw_data
             if self._bytes_read[-leneol:] == eol:
-                logger.debug(
-                   '_primare_reader - decoded: %s',
-                   binascii.hexlify(self._bytes_read))
+                logger.debug('_primare_reader - decoded: %s',
+                             binascii.hexlify(self._bytes_read))
 
                 variable_char, decoded_data = self._decode_raw_data(
                     self._bytes_read)
@@ -208,7 +204,7 @@ class PrimareTalker():
                 pass
 
     def _decode_raw_data(self, rawdata):
-        """Decode raw data from the serial port
+        r"""Decode raw data from the serial port.
 
         Replace any '\x10\x10' sequences with '\x10'.
         Returns the variable char and the data received between the STX and
@@ -250,7 +246,7 @@ class PrimareTalker():
                 self._power_state = int(data, 16)
             elif variable_char == '14':
                 self._inputname = data
-                if self._boot_print == True:
+                if self._boot_print is True:
                     self._boot_print = False
                     logger.info("""Connected to:
                                 Manufacturer:  %s
@@ -269,7 +265,7 @@ class PrimareTalker():
                 self._swversion = data
 
     def _send_command(self, variable, option=None):
-        """Send the specified command to the amplifier
+        """Send the specified command to the amplifier.
 
         :param variable: String key for the PRIMARE_CMD dict
         :type variable: string
@@ -285,7 +281,7 @@ class PrimareTalker():
         self._write(command, data)
 
     def _write(self, cmd_type, data):
-        """Write data to the serial port
+        r"""Write data to the serial port.
 
         Any occurences of '\x10' must be replaced with '\x10\x10' and add
         the STX and DLE+ETX markers
@@ -312,6 +308,11 @@ class PrimareTalker():
 
     # Public methods
     def setup(self):
+        """Setup the amplifier.
+
+        Set the receiver to a known state and print information about the
+        amplifier
+        """
         self._set_device_to_known_state()
         self._print_device_info()
 
@@ -337,10 +338,12 @@ class PrimareTalker():
         self.inputname_current_get()
 
     def input_next(self):
+        """Select next input on device."""
         self._send_command('input_next')
         self.inputname_current_get()
 
     def input_prev(self):
+        """Select previous input on device."""
         self._send_command('input_prev')
         self.inputname_current_get()
 
@@ -370,7 +373,8 @@ class PrimareTalker():
         :rtype: :class:`True` if success, :class:`False` if failure
         """
         target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
-        logger.debug("volume_set - target volume: {}".format(target_primare_volume))
+        logger.debug("volume_set - target volume: {}".format(
+            target_primare_volume))
         self._send_command('volume_set',
                            '{:02X}'.format(target_primare_volume))
         # There's a crazy bug where setting the volume to 65 and above will
@@ -386,31 +390,37 @@ class PrimareTalker():
         #    return False
 
     def volume_up(self):
+        """Increase volume by one step."""
         self._send_command('volume_up')
 
     def volume_down(self):
+        """Decrease volume by one step."""
         self._send_command('volume_down')
 
     def balance_adjust(self, adjustment):
+        """Modify volume balance settings."""
         # TODO
         pass
 
     def balance_set(self, balance):
+        """Set specific balance setting.
+
+        Value 10 means centered. Lower values adjusts balance to the left.
+        """
         # TODO
         pass
 
     def mute_toggle(self):
+        """Toggle mute on device."""
         self._send_command('mute_toggle')
 
     def mute_get(self):
-        """
-        Get mute state of the mixer.
-        """
+        """Get mute state of the mixer."""
         self._send_command('mute_toggle')
 
     def mute_set(self, mute):
         """
-        Mute or unmute the amplifier.
+        Enable or disable mute on device.
 
         :param mute: :class:`True` to mute, :class:`False` to unmute
         :type mute: bool
@@ -420,51 +430,82 @@ class PrimareTalker():
         self._send_command('mute_set', mute_value)
 
     def dim_cycle(self):
+        """Cycle through the different dim levels on device."""
         self._send_command('dim_cycle')
 
     def dim_set(self, level):
+        """Select a specific dim level on device."""
         if level >= 0:
             self._send_command('dim_set', '{:02X}'.format(int(level) % 4))
 
     def verbose_toggle(self):
+        """Toggle verbose mode on device.
+
+        When verbose is active, device will respond to commands and inform
+        about changes to variables.
+        """
         self._send_command('verbose_toggle')
 
     def verbose_set(self, verbose):
+        """Enable or disables verbose mode on device."""
         verbose_value = '01' if verbose is True else '00'
         self._send_command('verbose_set', verbose_value)
 
     def menu_toggle(self):
+        """Enter or leaves menu of device."""
         self._send_command('menu_toggle')
 
     def menu_set(self, menu):
+        """Control menus on the amplifier.
+
+        Allow closing of the menu or stepping into or out of a submenu if the
+        menu is active.
+        """
         self._send_command('menu_set', '{:02X}'.format(int(menu)))
 
     def remote_cmd(self, cmd):
+        """Send an IR command to the device.
+
+        The command will be treated as if the IR remote control has been used
+        to send the command.
+        """
         # TODO
         pass
 
     def ir_input_toggle(self):
+        """Toggle IR input source on device between front and back."""
         self._send_command('ir_input_toggle')
 
     def ir_input_set(self, ir_input):
+        """Select either front or back as current IR input source on device."""
         ir_value = '01' if ir_input is True else '00'
         self._send_command('ir_input_set', ir_value)
 
     def recall_factory_settings(self):
+        """Perform a factory reset.
+
+        Restore default values and restart the device.
+        """
         self._send_command('recall_factory_settings')
 
     def manufacturer_get(self):
+        """Read manufacturer name from the device."""
         self._send_command('manufacturer_get')
 
     def modelname_get(self):
+        """Read model name from device."""
         self._send_command('modelname_get')
 
     def swversion_get(self):
+        """Read current software version from device."""
         self._send_command('swversion_get')
 
     def inputname_current_get(self):
+        """Read current input name from device."""
         self._send_command('inputname_current_get')
 
     def inputname_specific_get(self, input):
+        """Read specified input name from device."""
         if input >= 0:
-            self._send_command('inputname_specific_get', '{:02X}'.format((int(input) % 8)))
+            self._send_command('inputname_specific_get',
+                               '{:02X}'.format((int(input) % 8)))

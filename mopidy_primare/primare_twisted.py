@@ -1,33 +1,18 @@
-###############################################################################
-#
-#  Copyright (C) 2012-2014 Tavendo GmbH
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-#
-###############################################################################
+"""Interface to Primare amplifiers using Twisted SerialPort.
 
+This module allows you to control your Primare I22 and I32 amplifier from the
+command line using Primare's binary protocol via the RS232 port on the
+amplifier.
+"""
 
-import argparse
+import click
 import logging
-import sys
-import time
 
 from threading import Thread
 
 from twisted.internet.serialport import SerialPort
 from twisted.protocols.basic import LineReceiver
 from twisted.internet import reactor
-from twisted.internet import task
 
 # from twisted.logger import (
 #     FilteringLogObserver,
@@ -47,7 +32,7 @@ from twisted.internet import task
 #     )
 # ])
 
-from primare_serial import PrimareTalker
+from primare_serial import PrimareController
 
 logger = logging.getLogger(__name__)
 # Setup logging so that is available
@@ -55,117 +40,127 @@ logging.basicConfig(level=logging.DEBUG)
 
 primare_talker = None
 
+
 class PrimareProtocol(LineReceiver):
-    """
-    Primare serial communication protocol.
-    """
+    """Primare serial communication protocol."""
+
     def __init__(self, debug=False):
+        """Initialization."""
         self._debug = debug
         self._primare_talker = primare_talker
 
         self.setRawMode()
         self._rawBuffer = bytearray()
 
-    def wrapSendLine(self, line):
-        logger.debug('LASSE wrapLine: {}'.format(line))
-        self.sendLine(line)
-
-    def connectionMade(self):
-        logger.info('Serial port connected.')
-
-    def lineReceived(self, line):
-        logger.info('LASSE - BOOOOM!!! ERROR')
+    # def connectionMade(self):
+    #     logger.info('Serial port connected.')
 
     def rawDataReceived(self, data):
+        """Handle raw data received by Twisted's SerialPort."""
         if self._debug:
             logger.debug("Serial RawRX({0}): {1}".format(len(data), data))
         _primare_talker._primare_reader(data)
 
-    # def randomFunc(self, turn_on):
-    #     """
-    #     This method is exported as RPC and can be called by connected clients
-    #     """
-    #     if turn_on:
-    #         payload = b'1'
-    #     else:
-    #         payload = b'0'
-    #     if self._debug:
-    #         logger.debug("Serial TX: {0}".format(payload))
-    #         self.transport.write(payload)
 
-
-def event_timer_func(talker, function):
-    logger.debug("Running event_timer_func")
-    methodToCall = getattr(talker, function)
-    methodToCall()
-
-if __name__ == '__main__':
+@click.group()
+@click.option("--amp-info",
+              default=False,
+              is_flag=True,
+              help="Retrieve and print amplifier information")
+@click.option("--baudrate",
+              default=4800,
+              type=click.Choice([300,
+                                 1200,
+                                 2400,
+                                 4800,
+                                 9600,
+                                 19200,
+                                 57600,
+                                 115200]),
+              help="Serial port baudrate.")
+@click.option("--debug",
+              "-d",
+              default=False,
+              is_flag=True,
+              help="Enable debug output.")
+@click.option("--port",
+              "-p",
+              default="/dev/ttyUSB0",
+              help="Serial port to use (e.g. 3 for a COM port on Windows, "
+              "/dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 for Serial-over-USB "
+              "on RaspberryPi.")
+def cli(amp_info, baudrate, debug, port):
+    """Prototype."""
     global _primare_talker
-    # parse command line arguments
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-d", "--debug", action="store_true",
-                        help="Enable debug output.")
-
-    parser.add_argument("--baudrate", type=int, default=4800,
-                        choices=[
-                            300, 1200, 2400, 4800, 9600, 19200, 57600, 115200],
-                        help='Serial port baudrate.')
-
-    parser.add_argument("--port", type=str, default='/dev/ttyUSB0',
-                        help="Serial port to use (e.g. 3 for a COM port on \
-                        Windows, /dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 \
-                        for Serial-over-USB on RaspberryPi.")
-
-    args = parser.parse_args()
 
     try:
         # on Windows, we need port to be an integer
-        args.port = int(args.port)
+        port = int(port)
     except ValueError:
         pass
 
+    serial_protocol = PrimareProtocol(debug)
+    _primare_talker = PrimareController(source=None,
+                                        volume=None,
+                                        writer=serial_protocol.sendLine)
 
-    logger.info("Using Twisted reactor {0}".format(reactor.__class__))
-
-    params = {
-        'port': args.port,
-        'baudrate': args.baudrate,
-        'debug': args.debug
-    }
-
-    serial_protocol = PrimareProtocol(params['debug'])
-    _primare_talker = PrimareTalker(source=None, volume=None, writer=serial_protocol.sendLine)
-    #_primare_talker.register_mcu_write_cb(serial_protocol.wrapSendLine)
-    #_primare_talker.register_mcu_write_cb(serial_protocol.sendLine)
-
-    logger.debug('About to open serial port {0} [{1} baud] ..'.format(params['port'],
-                                                               params['baudrate']))
-    # Prototype:
-    # SerialPort(protocol, deviceNameOrPortNumber, reactor,
-    #    baudrate=9600, bytesize=EIGHTBITS, parity=PARITY_NONE,
-    #    stopbits=STOPBITS_ONE, xonxoff=0, rtscts=0)
-
-    # Primare serial link config
-    # BAUDRATE = 4800
-    # BYTESIZE = 8
-    # PARITY = 'N'
-    # STOPBITS = 1
-    SerialPort(serial_protocol, deviceNameOrPortNumber=params['port'], reactor=reactor, baudrate=int(params['baudrate']))
+    logger.debug('About to open serial port {0} [{1} baud] ..'.format(
+        port,
+        baudrate))
+    SerialPort(serial_protocol,
+               deviceNameOrPortNumber=port,
+               reactor=reactor, baudrate=int(baudrate))
     thread_id = Thread(target=reactor.run, args=(False,))
-
-    #event = task.LoopingCall(event_timer_func, _primare_talker, "input_next")
-    #event.start(3)
 
     thread_id.start()
 
-    _primare_talker.setup()
-    _primare_talker._set_device_to_known_state()
-    _primare_talker._print_device_info()
-    #reactor.run()
+    if amp_info:
+        _primare_talker.setup()
 
-    logger.info("After thread start")
+    logger.info("After thread start, end of cli()")
 
+
+class PrimareCommands(click.Group):
+    """Fuck off."""
+
+    def list_commands(self, ctx, cmd_name):
+        """Fuck off."""
+        click.echo(ctx.args)
+        cmd = click.Group.get_command(self, ctx, cmd_name)
+        if cmd is not None:
+            return cmd
+        else:
+            return click.Group.get_command(self, ctx, 'interactive')
+        # rv = []
+        # for method in dir(_primare_talker):
+        #     if not method.beginswith('_'):
+        #         rv.append(method)
+        # rv.sort()
+        # logger.info("Dynamic methods: {}".format(rv))
+        # return rv
+
+    # def get_command(self, ctx, name):
+    #     """Fuck off."""
+    #     return getattr(_primare_talker, name)
+
+
+@click.command(cls=PrimareCommands)
+@click.pass_context
+def main(ctx):
+    """Blah."""
+    pass
+
+# @cli.command()
+# def volume_up():
+#     """Increase the volume on the amplifier."""
+#     _primare_talker.volume_up()
+#     # in a non-main thread:
+#     reactor.callFromThread(reactor.stop)
+
+
+@cli.command()
+def interactive():
+    """Waah."""
     try:
         nb = ''
         while True:
@@ -175,7 +170,8 @@ if __name__ == '__main__':
                 break
             else:
                 parsed_cmd = nb.split()
-                logger.info("Input rcv: {} - len: {}".format(parsed_cmd, len(parsed_cmd)))
+                logger.info("Input rcv: {} - len: {}".format(parsed_cmd,
+                                                             len(parsed_cmd)))
                 command = getattr(_primare_talker, parsed_cmd[0], None)
                 if command:
                     try:
@@ -190,10 +186,20 @@ if __name__ == '__main__':
                         else:
                             command()
                     except TypeError as e:
-                        logger.error("You called a method with an incorrect number of parameters: {}".format(e))
+                        logger.error("You called a method with an incorrect"
+                                     "number of parameters: {}".format(e))
                 else:
                     logger.info("No such function - try again")
     except KeyboardInterrupt:
         logger.info("User aborted")
     # in a non-main thread:
     reactor.callFromThread(reactor.stop)
+
+
+# cli_dynamic = PrimareCommands(help='Blah blah')
+
+# cmds = click.CommandCollection(sources=[cli, cli_dynamic])
+
+
+if __name__ == '__main__':
+    main()
