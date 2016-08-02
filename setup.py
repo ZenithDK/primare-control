@@ -11,33 +11,33 @@ def get_version(filename):
 
 
 setup(
-    name='Mopidy-Primare',
-    version=get_version('mopidy_primare/__init__.py'),
-    url='https://github.com/ZenithDK/mopidy-primare',
+    name='Primare-Control',
+    version='0.1',
+    py_modules=['primare_control'],
+    version=get_version('primare_control/__init__.py'),
+    url='https://github.com/ZenithDK/primare_control',
     license='Apache License, Version 2.0',
     author='Lasse Bigum',
     author_email='lasse@bigum.org',
-    description='Mopidy extension for controlling volume on a Primare amplifier',
+    description='Control your Primare amplifier via Python',
     long_description=open('README.rst').read(),
     packages=find_packages(exclude=['tests', 'tests.*']),
     zip_safe=False,
     include_package_data=True,
     install_requires=[
         'setuptools',
-        'Mopidy >= 0.19',
-        'Pykka >= 1.1',
-        'pyserial',
+        'Click',
+        'twisted',
     ],
     test_suite='nose.collector',
     tests_require=[
         'nose',
         'mock >= 1.0',
     ],
-    entry_points={
-        'mopidy.ext': [
-            'primare = mopidy_primare:Extension',
-        ],
-    },
+    entry_points='''
+        [console_scripts]
+        primare_control=primare_control:cli
+    ''',
     classifiers=[
         'Environment :: No Input/Output (Daemon)',
         'Intended Audience :: End Users/Desktop',
