@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import re
 
@@ -6,14 +6,12 @@ from setuptools import find_packages, setup
 
 
 def get_version(filename):
-    content = open(filename).read()
-    metadata = dict(re.findall("__([a-z]+)__ = '([^']+)'", content))
-    return metadata['version']
-
+    with open(filename) as fh:
+        metadata = dict(re.findall("__([a-z]+)__ = '([^']+)'", fh.read()))
+        return metadata['version']
 
 setup(
     name='Primare-Control',
-    py_modules=['primare_control'],
     version=get_version('primare_control/__init__.py'),
     url='https://github.com/ZenithDK/primare_control',
     license='Apache License, Version 2.0',
@@ -21,12 +19,14 @@ setup(
     author_email='lasse@bigum.org',
     description='Control your Primare amplifier via Python',
     long_description=open('README.rst').read(),
+    #py_modules=['primare_control'],
     packages=find_packages(exclude=['tests', 'tests.*']),
     zip_safe=False,
     include_package_data=True,
     install_requires=[
-        'setuptools',
         'Click',
+        'pyserial',
+        'setuptools',
         'twisted',
     ],
     test_suite='nose.collector',
@@ -36,7 +36,7 @@ setup(
     ],
     entry_points='''
         [console_scripts]
-        primare_control=primare_control:cli
+        primare_control=primare_control.primare_interface:cli
     ''',
     classifiers=[
         'Environment :: No Input/Output (Daemon)',

@@ -10,11 +10,11 @@ from threading import Thread
 
 import click
 
-from primare_serial import PrimareController
-
 from twisted.internet import reactor
 from twisted.internet.serialport import SerialPort
 from twisted.protocols.basic import LineReceiver
+
+from primare_control import PrimareController
 
 # from twisted.logger import (
 #     FilteringLogObserver,
@@ -76,8 +76,6 @@ class DefaultCmdGroup(click.Group):
         def subcommand(ctx):
             try:
                 method = getattr(PrimareController, name)
-                # method(ctx.obj["argument"])
-                click.echo("LASSE: {}".format(ctx.obj["value"]))
                 method(_primare_talker)
             except KeyboardInterrupt:
                 logger.info("User aborted")
@@ -93,6 +91,13 @@ class DefaultCmdGroup(click.Group):
             cmd = click.Group.get_command(self, ctx, 'interactive')
         else:
             subcommand.__doc__ = getattr(PrimareController, name).__doc__
+            if getattr(PrimareController, name).__func__.__code__.co_argcount > 1:
+                # click.echo("Arguments!")
+                ctx.command.params.append(click.Argument(("value",)))
+                # click.echo("ctx.args: {}".format(ctx.command.params))
+                # click.echo("dir: {}".format((ctx.__dict__)))
+            # else:
+                # click.echo("None")
             cmd = click.command(name)(subcommand)
         return cmd
 
@@ -113,7 +118,7 @@ class DefaultCmdGroup(click.Group):
                                  '19200',
                                  '57600',
                                  '115200']),
-              help="Serial port baudrate. I22 _must_ be 4800.")
+              help="Serial port baudrate. For I22 it _must_ be 4800.")
 @click.option("--debug",
               "-d",
               default=False,
@@ -125,15 +130,11 @@ class DefaultCmdGroup(click.Group):
               help="Serial port to use (e.g. 3 for a COM port on Windows, "
               "/dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 for Serial-over-USB "
               "on RaspberryPi.")
-# @click.argument('value', default=None, required=False)
-# def cli(ctx, amp_info, baudrate, debug, port, value):
 def cli(ctx, amp_info, baudrate, debug, port):
     """Prototype."""
     global _primare_talker
 
     ctx.obj = {}
-    # ctx.obj["value"] = value
-    ctx.obj["value"] = False
 
     try:
         # on Windows, we need port to be an integer
@@ -172,11 +173,11 @@ def interactive():
     """
     method_list = [
         (method,
-            getattr(PrimareController, method).__doc__.splitlines()[0]) for
+            getattr(PrimareController, method).__doc__) for
         method in dir(PrimareController) if not method.startswith('_')]
     help_string = """To exit, press enter (blank line) or type 'q' or 'quit'.\n
 Available commands are:
-{}""".format('\n'.join("  {} {}".format(method.ljust(25), doc)
+{}""".format('\n'.join("  {} {}".format(method.ljust(25), doc.splitlines()[0])
                        for method, doc in method_list))
     try:
         logger.info(help_string)
@@ -186,8 +187,17 @@ Available commands are:
             if not nb or nb == 'q' or nb == 'quit':
                 logger.info("Quit: '{}'".format(nb))
                 break
-            elif nb == 'help':
-                logger.info(help_string)
+            elif nb.startswith('help '):
+                if len(nb.split()) == 2:
+                    help_method = nb.split()[1]
+                    matches = [item for item in method_list if item[0].startswith(help_method)]
+                    if len(matches):
+                        logger.info("\n".join("\n== {}\n{}".format(method.ljust(25), doc_string) for method, doc_string in matches))
+                    else:
+                        logger.error("Help requested on unknown method: {}".format(help_method))
+                else:
+                    logger.info(help_string)
+
             else:
                 parsed_cmd = nb.split()
                 command = getattr(_primare_talker, parsed_cmd[0], None)
