@@ -5,14 +5,16 @@ command line using Primare's binary protocol via the RS232 port on the
 amplifier.
 """
 
-import click
 import logging
-
 from threading import Thread
 
+import click
+
+from primare_serial import PrimareController
+
+from twisted.internet import reactor
 from twisted.internet.serialport import SerialPort
 from twisted.protocols.basic import LineReceiver
-from twisted.internet import reactor
 
 # from twisted.logger import (
 #     FilteringLogObserver,
@@ -31,8 +33,6 @@ from twisted.internet import reactor
 #         [LogLevelFilterPredicate(LogLevel.debug)]
 #     )
 # ])
-
-from primare_serial import PrimareController
 
 logger = logging.getLogger(__name__)
 # Setup logging so that is available
@@ -60,19 +60,24 @@ class PrimareProtocol(LineReceiver):
 
 
 class DefaultCmdGroup(click.Group):
+    """Custom implementation for handling Primare methods in a unified way."""
+
     def list_commands(self, ctx):
-        rv = [method for method in dir(PrimareController) if not method.startswith('_')]
+        """List Primare Control methods."""
+        rv = [method for method in dir(PrimareController)
+              if not method.startswith('_')]
         rv.append('interactive')
         rv.sort()
         return rv
 
     def get_command(self, ctx, name):
+        """Return click command."""
         @click.pass_context
         def subcommand(ctx):
             try:
                 method = getattr(PrimareController, name)
                 # method(ctx.obj["argument"])
-                #click.echo("LASSE: {}".format(ctx.obj["value"]))
+                click.echo("LASSE: {}".format(ctx.obj["value"]))
                 method(_primare_talker)
             except KeyboardInterrupt:
                 logger.info("User aborted")
@@ -99,7 +104,7 @@ class DefaultCmdGroup(click.Group):
               is_flag=True,
               help="Retrieve and print amplifier information")
 @click.option("--baudrate",
-              default=4800,
+              default='4800',
               type=click.Choice(['300',
                                  '1200',
                                  '2400',
@@ -108,7 +113,7 @@ class DefaultCmdGroup(click.Group):
                                  '19200',
                                  '57600',
                                  '115200']),
-              help="Serial port baudrate.")
+              help="Serial port baudrate. I22 _must_ be 4800.")
 @click.option("--debug",
               "-d",
               default=False,
@@ -120,12 +125,15 @@ class DefaultCmdGroup(click.Group):
               help="Serial port to use (e.g. 3 for a COM port on Windows, "
               "/dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 for Serial-over-USB "
               "on RaspberryPi.")
+# @click.argument('value', default=None, required=False)
+# def cli(ctx, amp_info, baudrate, debug, port, value):
 def cli(ctx, amp_info, baudrate, debug, port):
     """Prototype."""
     global _primare_talker
 
     ctx.obj = {}
-    #ctx.obj["value"] = value
+    # ctx.obj["value"] = value
+    ctx.obj["value"] = False
 
     try:
         # on Windows, we need port to be an integer
@@ -160,11 +168,16 @@ def interactive():
 
     Press enter (blank line), 'q' or 'quit' to exit.
 
-    For a list of available commands, type 'help'"""
-    method_list = [(method, getattr(PrimareController, method).__doc__.splitlines()[0]) for method in dir(PrimareController) if not method.startswith('_')]
+    For a list of available commands, type 'help'
+    """
+    method_list = [
+        (method,
+            getattr(PrimareController, method).__doc__.splitlines()[0]) for
+        method in dir(PrimareController) if not method.startswith('_')]
     help_string = """To exit, press enter (blank line) or type 'q' or 'quit'.\n
 Available commands are:
-{}""".format('\n'.join("  {} {}".format(method.ljust(25), doc) for method, doc in method_list))
+{}""".format('\n'.join("  {} {}".format(method.ljust(25), doc)
+                       for method, doc in method_list))
     try:
         logger.info(help_string)
         nb = ''

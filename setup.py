@@ -1,7 +1,8 @@
 from __future__ import unicode_literals
 
 import re
-from setuptools import setup, find_packages
+
+from setuptools import find_packages, setup
 
 
 def get_version(filename):
@@ -12,7 +13,6 @@ def get_version(filename):
 
 setup(
     name='Primare-Control',
-    version='0.1',
     py_modules=['primare_control'],
     version=get_version('primare_control/__init__.py'),
     url='https://github.com/ZenithDK/primare_control',
