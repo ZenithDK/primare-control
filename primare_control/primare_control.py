@@ -12,9 +12,18 @@ import logging
 import struct
 import time
 
-# from twisted.logger import Logger
+from threading import Thread
+from twisted.internet import reactor
+from twisted.internet.serialport import SerialPort
+from twisted.protocols.basic import LineReceiver
 
+# from twisted.logger import Logger
+#
 # logger = Logger()
+
+# Setup logging so that is available
+FORMAT = '%(asctime)-15s %(levelname)-8s %(message)s'
+logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
 logger = logging.getLogger(__name__)
 
@@ -119,18 +128,52 @@ PRIMARE_REPLY = {
 # * Better error handling
 #       After suspend/resume, if volume up/down fails (or similar),
 #       try turning amp on
+#   Need to handle reads as "success" - now we get no reply
 #
 # LATER
-# * v2: Implement as module(?), not class, for multiple writers/subscribers
-#       (singleton)
-#       Seems like a factory would be better, so 'import primare_serial' then
+# * v2: Seems like a factory would be better, so 'import primare_serial' then
 #       primare_serial.initComs() which then creates the single Serial object.
+#       http://stackoverflow.com/questions/6760685/creating-a-singleton-in-python/6798042#6798042
 # * v2: Add notification callback mechanism to notify users of changes on
 #       amp (dials or other SW)
 #       http://bit.ly/WGRn0g
 #       Better idea: websocket
 #       http://forums.lantronix.com/showthread.php?p=3131
 # * ...
+
+
+class PrimareProtocol(LineReceiver):
+    """Primare serial communication protocol."""
+
+    def __init__(self, primare_talker=None, debug=False):
+        """Initialization."""
+        self._debug = debug
+        self._primare_talker = primare_talker
+        self.delimiter = BYTE_DLE_ETX
+        self.setRawMode()
+        #self.setLineMode()
+
+    def connectionMade(self):
+        """Indicate the connection is made."""
+        if self._debug:
+            logger.debug("Connection made to Primare")
+
+    def connectionLost(self, reason):
+        """Indicate that the connection is lost."""
+        if self._debug:
+            logger.debug("Lost connection to Primare due to '{}'".format(
+                reason.getErrorMessage()))
+        self._primare_talker = None
+
+    def rawDataReceived(self, data):
+        """Handle raw data received by Twisted's SerialPort."""
+        if self._debug:
+            logger.debug("Serial RawRX({0}): {1}".format(len(data), data))
+        self._primare_talker._primare_reader(data)
+
+    def lineReceived(self, data):
+         logger.info('LR-RX: {}'.format(data))
+         self._primare_talker._primare_reader(data)
 
 
 class PrimareController():
@@ -140,12 +183,18 @@ class PrimareController():
     # Primare amplifiers have 79 levels
     _VOLUME_LEVELS = 79
 
-    def __init__(self, source=None, volume=None, writer=None):
+    def __init__(self,
+                 port="/dev/ttyUSB0",
+                 baudrate=4800,
+                 source=None,
+                 volume=None,
+                 debug=False):
         """Initialization."""
-        self._bytes_read = bytearray()
-        self._write_cb = writer
+        self._bytes_read = bytearray()  # TODO: Try and move this to the read function, see if it ever makes a difference
+        self._serial_protocol = None
+        self._thread_id = None
 
-        self._boot_print = True
+        self._device_info_print = True  # Dummy for only printing device info once
         self._manufacturer = ''
         self._modelname = ''
         self._swversion = ''
@@ -155,30 +204,54 @@ class PrimareController():
         if volume:
             self.volume_set(volume)
 
-        # Setup logging so that is available
-        logging.basicConfig(level=logging.DEBUG)
+        self._serial_protocol = PrimareProtocol(self, debug)
+        logger.debug('About to open serial port {0} [{1} baud] ..'.format(
+            port,
+            baudrate))
+        SerialPort(protocol=self._serial_protocol,
+                   deviceNameOrPortNumber=port,
+                   reactor=reactor,
+                   baudrate=int(baudrate))
+        self._thread_id = Thread(target=reactor.run, args=(False,))
+        self._thread_id.start()
+
+    def __enter__(self):
+        """Context manager entry."""
+        logger.info("__enter__")
+        return self
+
+    def __exit__(self, type, value, traceback):
+        """Context manager exit."""
+        logger.info("__exit__")
+
+    def __del__(self):
+        """Delete the PrimareController instance."""
+        logger.info("__del__")
+        pass
+
+    def close(self):
+        """Close down PrimareController transport and threads."""
+        logger.info("close")
+        self._serial_protocol.transport.loseConnection()
+        reactor.callFromThread(reactor.stop)
+        self._thread_id.join()
 
     # Private methods
     def _set_device_to_known_state(self):
         logger.debug('_set_device_to_known_state')
         self.verbose_set(True)
         self.power_on()
-        time.sleep(1)
         if self._source is not None:
             self.input_set(self._source)
         self.mute_set(False)
-
-    def _print_device_info(self):
-        self.manufacturer_get()
-        self.modelname_get()
-        self.swversion_get()
-        # We always get inputname last, this represents our initialization
-        self.inputname_current_get()
 
     def _primare_reader(self, rawdata):
         r"""Take raw data and finds the EOL sequence \x10\x03."""
         eol = BYTE_DLE_ETX
         leneol = len(eol)
+
+        logger.debug('_primare_reader - received: %s',
+                     binascii.hexlify(rawdata))
 
         for index, c in enumerate(rawdata):
             self._bytes_read += c
@@ -246,8 +319,8 @@ class PrimareController():
                 self._power_state = int(data, 16)
             elif variable_char == '14':
                 self._inputname = data
-                if self._boot_print is True:
-                    self._boot_print = False
+                if self._device_info_print is True:
+                    self._device_info_print = False
                     logger.info("""Connected to:
                                 Manufacturer:  %s
                                 Model:         %s
@@ -302,9 +375,9 @@ class PrimareController():
         binary_data += binary_variable + BYTE_DLE_ETX
 
         logger.debug('WriteHex: %s', binascii.hexlify(binary_data))
-        self._write_cb(binary_data)
+        self._serial_protocol.sendLine(binary_data)
         # Things are wonky if we try to write too quickly
-        time.sleep(0.06)
+        time.sleep(0.06)  # TODO: This could be an issue about not reading everything in the buffer, and discarding it prematurely
 
     # Public methods
     def setup(self):
@@ -314,7 +387,16 @@ class PrimareController():
         amplifier
         """
         self._set_device_to_known_state()
-        self._print_device_info()
+        self.device_info()
+
+    def device_info(self):
+        """Retrieve and print information on Primare amplifier."""
+        self._device_info_print = True
+        self.manufacturer_get()
+        self.modelname_get()
+        self.swversion_get()
+        # We always get inputname last, this represents our initialization
+        self.inputname_current_get()
 
     def power_on(self):
         """Power on the Primare amplifier."""

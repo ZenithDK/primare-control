@@ -5,14 +5,10 @@ command line using Primare's binary protocol via the RS232 port on the
 amplifier.
 """
 
-import logging
-from threading import Thread
-
 import click
+import logging
 
-from twisted.internet import reactor
-from twisted.internet.serialport import SerialPort
-from twisted.protocols.basic import LineReceiver
+from contextlib import closing
 
 from primare_control import PrimareController
 
@@ -34,29 +30,11 @@ from primare_control import PrimareController
 #     )
 # ])
 
-logger = logging.getLogger(__name__)
 # Setup logging so that is available
-logging.basicConfig(level=logging.DEBUG)
+FORMAT = '%(asctime)-15s %(levelname)-8s %(message)s'
+logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
-primare_talker = None
-
-
-class PrimareProtocol(LineReceiver):
-    """Primare serial communication protocol."""
-
-    def __init__(self, debug=False):
-        """Initialization."""
-        self._debug = debug
-        self._primare_talker = primare_talker
-
-        self.setRawMode()
-        self._rawBuffer = bytearray()
-
-    def rawDataReceived(self, data):
-        """Handle raw data received by Twisted's SerialPort."""
-        if self._debug:
-            logger.debug("Serial RawRX({0}): {1}".format(len(data), data))
-        _primare_talker._primare_reader(data)
+logger = logging.getLogger(__name__)
 
 
 class DefaultCmdGroup(click.Group):
@@ -68,22 +46,24 @@ class DefaultCmdGroup(click.Group):
               if not method.startswith('_')]
         rv.append('interactive')
         rv.sort()
+        logger.debug("list_commands done")
         return rv
 
     def get_command(self, ctx, name):
         """Return click command."""
+        logger.debug("get_command start")
+
         @click.pass_context
         def subcommand(ctx):
-            try:
-                method = getattr(PrimareController, name)
-                method(_primare_talker)
-            except KeyboardInterrupt:
-                logger.info("User aborted")
-            except TypeError as e:
-                logger.error(e)
-            finally:
-                # in a non-main thread:
-                reactor.callFromThread(reactor.stop)
+            with closing(ctx.obj):
+                try:
+                    method = getattr(PrimareController, name)
+                    method(ctx.obj)
+                except KeyboardInterrupt:
+                    logger.info("User aborted")
+                except TypeError as e:
+                    logger.error(e)
+            logger.debug("get_command.subcommand() done")
 
         # attach doc from original callable so it will appear
         # in CLI output
@@ -99,6 +79,7 @@ class DefaultCmdGroup(click.Group):
             # else:
                 # click.echo("None")
             cmd = click.command(name)(subcommand)
+        logger.debug("get_command done")
         return cmd
 
 
@@ -132,39 +113,29 @@ class DefaultCmdGroup(click.Group):
               "on RaspberryPi.")
 def cli(ctx, amp_info, baudrate, debug, port):
     """Prototype."""
-    global _primare_talker
 
-    ctx.obj = {}
-
+    logger.debug("cli() start")
     try:
         # on Windows, we need port to be an integer
         port = int(port)
     except ValueError:
         pass
 
-    serial_protocol = PrimareProtocol(debug)
-    _primare_talker = PrimareController(source=None,
-                                        volume=None,
-                                        writer=serial_protocol.sendLine)
-
-    logger.debug('About to open serial port {0} [{1} baud] ..'.format(
-        port,
-        baudrate))
-    SerialPort(serial_protocol,
-               deviceNameOrPortNumber=port,
-               reactor=reactor, baudrate=int(baudrate))
-    thread_id = Thread(target=reactor.run, args=(False,))
-
-    thread_id.start()
+    ctx.obj = PrimareController(port=port,
+                                baudrate=baudrate,
+                                source=None,
+                                volume=None,
+                                debug=debug)
 
     if amp_info:
-        _primare_talker.setup()
+        ctx.obj.setup()
 
-    logger.info("After thread start, end of cli()")
+    logger.debug("After thread start, end of cli()")
 
 
 @cli.command()
-def interactive():
+@click.pass_context
+def interactive(ctx):
     """Start interactive shell for controlling a Primare amplifier.
 
     Press enter (blank line), 'q' or 'quit' to exit.
@@ -185,22 +156,26 @@ Available commands are:
         while True:
             nb = raw_input('Cmd: ').strip()
             if not nb or nb == 'q' or nb == 'quit':
-                logger.info("Quit: '{}'".format(nb))
+                logger.debug("Quit: '{}'".format(nb))
                 break
             elif nb.startswith('help '):
                 if len(nb.split()) == 2:
                     help_method = nb.split()[1]
-                    matches = [item for item in method_list if item[0].startswith(help_method)]
+                    matches = [item for item in method_list
+                               if item[0].startswith(help_method)]
                     if len(matches):
-                        logger.info("\n".join("\n== {}\n{}".format(method.ljust(25), doc_string) for method, doc_string in matches))
+                        logger.info("\n".join("\n== {}\n{}".format(
+                            method.ljust(25), doc_string) for
+                            method, doc_string in matches))
                     else:
-                        logger.error("Help requested on unknown method: {}".format(help_method))
+                        logger.info("Help requested on unknown method: {}".format(
+                            help_method))
                 else:
                     logger.info(help_string)
 
             else:
                 parsed_cmd = nb.split()
-                command = getattr(_primare_talker, parsed_cmd[0], None)
+                command = getattr(ctx.obj, parsed_cmd[0], None)
                 if command:
                     try:
                         if len(parsed_cmd) > 1:
@@ -214,15 +189,17 @@ Available commands are:
                         else:
                             command()
                     except TypeError as e:
-                        logger.error("You called a method with an incorrect"
+                        logger.warn("You called a method with an incorrect"
                                      "number of parameters: {}".format(e))
                 else:
                     logger.info("No such function - try again")
     except KeyboardInterrupt:
         logger.info("User aborted")
     # in a non-main thread:
-    reactor.callFromThread(reactor.stop)
-
+    ctx.obj.close()
+    del ctx.obj
+    ctx.obj = None
 
 if __name__ == '__main__':
+    logger.debug("Starting primare_interface.py")
     cli()
