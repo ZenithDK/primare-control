@@ -11,7 +11,9 @@ import primare_control.primare_control
 class CliHelpTest(unittest.TestCase):
 
     def test_help_has_primare_cli_options(self):
-        primare_cli_dir = os.path.join(os.path.dirname(primare_control.__file__), "primare_interface.py")
+        primare_cli_dir = os.path.join(
+            os.path.dirname(primare_control.__file__),
+            "primare_interface.py")
         args = [sys.executable, primare_cli_dir, '--help']
         print("LASSE: {}".format(args))
         process = subprocess.Popen(

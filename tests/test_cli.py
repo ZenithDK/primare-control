@@ -3,6 +3,7 @@ from click.testing import CliRunner
 
 from primare_control.primare_control import PrimareController
 
+
 def test_greet():
     @click.command()
     @click.argument('name')

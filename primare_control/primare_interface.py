@@ -5,11 +5,10 @@ command line using Primare's binary protocol via the RS232 port on the
 amplifier.
 """
 
-import click
 import logging
+import click
 
 from contextlib import closing
-
 from primare_control import PrimareController
 
 # from twisted.logger import (
@@ -31,7 +30,7 @@ from primare_control import PrimareController
 # ])
 
 # Setup logging so that is available
-FORMAT = '%(asctime)-15s %(levelname)-8s %(message)s'
+FORMAT = '%(asctime)-15s %(name)s %(levelname)-8s %(message)s'
 logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
 logger = logging.getLogger(__name__)
@@ -54,11 +53,26 @@ class DefaultCmdGroup(click.Group):
         logger.debug("get_command start")
 
         @click.pass_context
-        def subcommand(ctx):
-            with closing(ctx.obj):
+        def subcommand(*args, **kwargs):
+            logger.debug("subcommand args: {}".format(args))
+            logger.debug("subcommand kvargs: {}".format(kwargs))
+            ctx = args[0]
+            params = ctx.obj['parameters']
+            ctx.obj['p_ctrl'] = PrimareController(port=params['port'],
+                                                  baudrate=params['baudrate'],
+                                                  source=None,
+                                                  volume=None,
+                                                  debug=params['debug'])
+            with closing(ctx.obj['p_ctrl']):
                 try:
+                    if ctx.obj['parameters']['amp_info']:
+                        ctx.obj['p_ctrl'].setup()
+
                     method = getattr(PrimareController, name)
-                    method(ctx.obj)
+                    if len(kwargs):
+                        method(ctx.obj['p_ctrl'], int(kwargs['value']))
+                    else:
+                        method(ctx.obj['p_ctrl'])
                 except KeyboardInterrupt:
                     logger.info("User aborted")
                 except TypeError as e:
@@ -70,15 +84,23 @@ class DefaultCmdGroup(click.Group):
         if name == "interactive":
             cmd = click.Group.get_command(self, ctx, 'interactive')
         else:
-            subcommand.__doc__ = getattr(PrimareController, name).__doc__
-            if getattr(PrimareController, name).__func__.__code__.co_argcount > 1:
-                # click.echo("Arguments!")
-                ctx.command.params.append(click.Argument(("value",)))
-                # click.echo("ctx.args: {}".format(ctx.command.params))
-                # click.echo("dir: {}".format((ctx.__dict__)))
-            # else:
-                # click.echo("None")
-            cmd = click.command(name)(subcommand)
+            if name in [method for method in dir(PrimareController)
+                        if not method.startswith('_')]:
+                subcommand.__doc__ = getattr(PrimareController, name).__doc__
+                if getattr(PrimareController,
+                           name).__func__.__code__.co_argcount > 1:
+                    logger.debug("Add argument to function: {}".format(name))
+                    params_arg = [click.Argument(("value",))]
+                else:
+                    logger.debug("Function takes no argument: {}".format(name))
+                    params_arg = None
+
+                cmd = click.Command(name,
+                                    params=params_arg,
+                                    callback=subcommand)
+            else:
+                logger.debug("get_command no_such_cmd")
+                cmd = None
         logger.debug("get_command done")
         return cmd
 
@@ -112,8 +134,7 @@ class DefaultCmdGroup(click.Group):
               "/dev/ttyATH0 for Arduino Yun, /dev/ttyACM0 for Serial-over-USB "
               "on RaspberryPi.")
 def cli(ctx, amp_info, baudrate, debug, port):
-    """Prototype."""
-
+    """Prototype command."""
     logger.debug("cli() start")
     try:
         # on Windows, we need port to be an integer
@@ -121,16 +142,16 @@ def cli(ctx, amp_info, baudrate, debug, port):
     except ValueError:
         pass
 
-    ctx.obj = PrimareController(port=port,
-                                baudrate=baudrate,
-                                source=None,
-                                volume=None,
-                                debug=debug)
+    ctx.obj = {}
+    ctx.obj['p_ctrl'] = None
+    ctx.obj['parameters'] = {
+        'amp_info': amp_info,
+        'baudrate': baudrate,
+        'debug': debug,
+        'port': port,
+    }
 
-    if amp_info:
-        ctx.obj.setup()
-
-    logger.debug("After thread start, end of cli()")
+    logger.debug("cli() end")
 
 
 @cli.command()
@@ -151,6 +172,15 @@ Available commands are:
 {}""".format('\n'.join("  {} {}".format(method.ljust(25), doc.splitlines()[0])
                        for method, doc in method_list))
     try:
+        params = ctx.obj['parameters']
+        ctx.obj['p_ctrl'] = PrimareController(port=params['port'],
+                                              baudrate=params['baudrate'],
+                                              source=None,
+                                              volume=None,
+                                              debug=params['debug'])
+        if ctx.obj['parameters']['amp_info']:
+            ctx.obj['p_ctrl'].setup()
+
         logger.info(help_string)
         nb = ''
         while True:
@@ -158,7 +188,7 @@ Available commands are:
             if not nb or nb == 'q' or nb == 'quit':
                 logger.debug("Quit: '{}'".format(nb))
                 break
-            elif nb.startswith('help '):
+            elif nb.startswith('help'):
                 if len(nb.split()) == 2:
                     help_method = nb.split()[1]
                     matches = [item for item in method_list
@@ -168,14 +198,16 @@ Available commands are:
                             method.ljust(25), doc_string) for
                             method, doc_string in matches))
                     else:
-                        logger.info("Help requested on unknown method: {}".format(
-                            help_method))
+                        logger.info(
+                            "Help requested on unknown method: {}".format(
+                                help_method))
                 else:
                     logger.info(help_string)
 
             else:
                 parsed_cmd = nb.split()
-                command = getattr(ctx.obj, parsed_cmd[0], None)
+                logger.info("parsed_cmd: {}".format(parsed_cmd))
+                command = getattr(ctx.obj['p_ctrl'], parsed_cmd[0], None)
                 if command:
                     try:
                         if len(parsed_cmd) > 1:
@@ -183,22 +215,25 @@ Available commands are:
                                 parsed_cmd[1] = True
                             elif parsed_cmd[1].lower() == "false":
                                 parsed_cmd[1] = False
+                            elif parsed_cmd[0] == "remote_cmd":
+                                pass
+                                parsed_cmd[1] = '{}'.format(parsed_cmd[1])
                             else:
                                 parsed_cmd[1] = int(parsed_cmd[1])
                             command(parsed_cmd[1])
                         else:
                             command()
                     except TypeError as e:
-                        logger.warn("You called a method with an incorrect"
-                                     "number of parameters: {}".format(e))
+                        logger.warn("You called a method with an incorrect" +
+                                    "number of parameters: {}".format(e))
                 else:
                     logger.info("No such function - try again")
     except KeyboardInterrupt:
         logger.info("User aborted")
     # in a non-main thread:
-    ctx.obj.close()
-    del ctx.obj
-    ctx.obj = None
+    ctx.obj['p_ctrl'].close()
+    del ctx.obj['p_ctrl']
+    ctx.obj['p_ctrl'] = None
 
 if __name__ == '__main__':
     logger.debug("Starting primare_interface.py")

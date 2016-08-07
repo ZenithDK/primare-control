@@ -19,7 +19,6 @@ setup(
     author_email='lasse@bigum.org',
     description='Control your Primare amplifier via Python',
     long_description=open('README.rst').read(),
-    #py_modules=['primare_control'],
     packages=find_packages(exclude=['tests', 'tests.*']),
     zip_safe=False,
     include_package_data=True,

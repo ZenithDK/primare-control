@@ -22,7 +22,7 @@ from twisted.protocols.basic import LineReceiver
 # logger = Logger()
 
 # Setup logging so that is available
-FORMAT = '%(asctime)-15s %(levelname)-8s %(message)s'
+FORMAT = '%(asctime)-15s %(name)s %(levelname)-8s %(message)s'
 logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ POS_STX = slice(0, 1)
 POS_DLE_ETX = slice(-2, None)
 POS_CMD_VAR = slice(2, 3)
 POS_REPLY_VAR = slice(1, 2)
-POS_REPLY_DATA = slice(2, -2)
+POS_REPLY_DATA = slice(2, None)
 BYTE_STX = '\x02'
 BYTE_WRITE = '\x57'
 BYTE_READ = '\x52'
@@ -110,6 +110,7 @@ PRIMARE_CMD = {
 PRIMARE_REPLY = {
     '01': 'power',
     '02': 'input',
+    '94': 'input',
     '03': 'volume',
     '04': 'balance',
     '09': 'mute',
@@ -146,12 +147,13 @@ class PrimareProtocol(LineReceiver):
     """Primare serial communication protocol."""
 
     def __init__(self, primare_talker=None, debug=False):
-        """Initialization."""
+        r"""Initialization of LineReader.
+
+        Default is to use BYTE_DLE_ETX (\10\03) delimiter and LineMode
+        """
         self._debug = debug
         self._primare_talker = primare_talker
         self.delimiter = BYTE_DLE_ETX
-        self.setRawMode()
-        #self.setLineMode()
 
     def connectionMade(self):
         """Indicate the connection is made."""
@@ -165,15 +167,11 @@ class PrimareProtocol(LineReceiver):
                 reason.getErrorMessage()))
         self._primare_talker = None
 
-    def rawDataReceived(self, data):
-        """Handle raw data received by Twisted's SerialPort."""
-        if self._debug:
-            logger.debug("Serial RawRX({0}): {1}".format(len(data), data))
-        self._primare_talker._primare_reader(data)
-
     def lineReceived(self, data):
-         logger.info('LR-RX: {}'.format(data))
-         self._primare_talker._primare_reader(data)
+        """Handle each line received by Twisted's SerialPort."""
+        if self._debug:
+            logger.debug("Serial LineRX({}): '{}'".format(len(data), data))
+        self._primare_talker._primare_reader(data)
 
 
 class PrimareController():
@@ -190,11 +188,10 @@ class PrimareController():
                  volume=None,
                  debug=False):
         """Initialization."""
-        self._bytes_read = bytearray()  # TODO: Try and move this to the read function, see if it ever makes a difference
         self._serial_protocol = None
         self._thread_id = None
 
-        self._device_info_print = True  # Dummy for only printing device info once
+        self._device_info_print = True  # Only print device info once
         self._manufacturer = ''
         self._modelname = ''
         self._swversion = ''
@@ -203,6 +200,9 @@ class PrimareController():
         # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
         if volume:
             self.volume_set(volume)
+
+        if debug:
+            logger.setLevel(logging.DEBUG)
 
         self._serial_protocol = PrimareProtocol(self, debug)
         logger.debug('About to open serial port {0} [{1} baud] ..'.format(
@@ -246,35 +246,22 @@ class PrimareController():
         self.mute_set(False)
 
     def _primare_reader(self, rawdata):
-        r"""Take raw data and finds the EOL sequence \x10\x03."""
-        eol = BYTE_DLE_ETX
-        leneol = len(eol)
-
-        logger.debug('_primare_reader - received: %s',
+        # From the documentation:
+        # Escape sequence
+        # If any variable or value byte is equal to <DLE>, this byte must be
+        # sent twice to avoid confusing this with end of message.
+        logger.debug('_primare_reader - decoded: %s',
                      binascii.hexlify(rawdata))
 
-        for index, c in enumerate(rawdata):
-            self._bytes_read += c
+        # For some reason, an empty line is retrieved sometimes
+        # This is seen after input_next/prev.
+        if len(rawdata):
+            variable_char, decoded_data = self._decode_raw_data(rawdata)
 
-            # TODO: Need to do conversion of \x10\x10 before looking for EOL!
-            # Doing it after is actually wrong, move code up here from
-            # _decode_raw_data
-            if self._bytes_read[-leneol:] == eol:
-                logger.debug('_primare_reader - decoded: %s',
-                             binascii.hexlify(self._bytes_read))
-
-                variable_char, decoded_data = self._decode_raw_data(
-                    self._bytes_read)
-                # We found a data sequence, extract remaining data and start
-                # again
-                rawdata = rawdata[index + 1:]
-                self._bytes_read = bytearray()
-
+            if variable_char in ['14', '15', '16', '17']:
                 self._parse_and_store(variable_char, decoded_data)
-            else:
-                # logger.debug('_primare_reader - not-eol: %s',
-                #              binascii.hexlify(self._bytes_read[-leneol:]))
-                pass
+        else:
+            logger.info("Received empty string")
 
     def _decode_raw_data(self, rawdata):
         r"""Decode raw data from the serial port.
@@ -310,32 +297,28 @@ class PrimareController():
         return variable_char, data
 
     def _parse_and_store(self, variable_char, data):
-        if variable_char in ['01', '14', '15', '16', '17']:
-            if variable_char in ['14', '15', '16', '17']:
-                logger.debug('_parse_and_store - index: "%s" - %s',
-                             variable_char,
-                             binascii.unhexlify(data))
-            if variable_char == '01':
-                self._power_state = int(data, 16)
-            elif variable_char == '14':
-                self._inputname = data
-                if self._device_info_print is True:
-                    self._device_info_print = False
-                    logger.info("""Connected to:
-                                Manufacturer:  %s
-                                Model:         %s
-                                SW Version:    %s
-                                Current input: %s """,
-                                binascii.unhexlify(self._manufacturer),
-                                binascii.unhexlify(self._modelname),
-                                binascii.unhexlify(self._swversion),
-                                binascii.unhexlify(self._inputname))
-            elif variable_char == '15':
-                self._manufacturer = data
-            elif variable_char == '16':
-                self._modelname = data
-            elif variable_char == '17':
-                self._swversion = data
+        logger.debug('_parse_and_store - index: "%s" - %s',
+                     variable_char,
+                     binascii.unhexlify(data))
+        if variable_char == '14':
+            self._inputname = data
+            if self._device_info_print is True:
+                self._device_info_print = False
+                logger.info("""Connected to:
+                            Manufacturer:  %s
+                            Model:         %s
+                            SW Version:    %s
+                            Current input: %s """,
+                            binascii.unhexlify(self._manufacturer),
+                            binascii.unhexlify(self._modelname),
+                            binascii.unhexlify(self._swversion),
+                            binascii.unhexlify(self._inputname))
+        elif variable_char == '15':
+            self._manufacturer = data
+        elif variable_char == '16':
+            self._modelname = data
+        elif variable_char == '17':
+            self._swversion = data
 
     def _send_command(self, variable, option=None):
         """Send the specified command to the amplifier.
@@ -359,7 +342,9 @@ class PrimareController():
         Any occurences of '\x10' must be replaced with '\x10\x10' and add
         the STX and DLE+ETX markers
         """
-        # We need to replace single DLE (0x10) with double DLE to discern it
+        # We need to replace single DLE (0x10) with double DLE
+        # Seems redundant as there is no '0x10' command, and we only have one
+        # variable that could be 0x10, followed by 0x10 0x03
         data_safe = ''
         for index in range(0, len(data) - 1, 2):
             pair = data[index:index + 2]
@@ -376,15 +361,21 @@ class PrimareController():
 
         logger.debug('WriteHex: %s', binascii.hexlify(binary_data))
         self._serial_protocol.sendLine(binary_data)
-        # Things are wonky if we try to write too quickly
-        time.sleep(0.06)  # TODO: This could be an issue about not reading everything in the buffer, and discarding it prematurely
+        # TODO: Find a better way around this
+        # Needed as we otherwise shut down too quickly, we won't have
+        # time to read the buffer and parse the data.
+        time.sleep(0.05)
 
     # Public methods
     def setup(self):
         """Setup the amplifier.
 
-        Set the receiver to a known state and print information about the
-        amplifier
+        Set the receiver to a known state:
+        - Power on
+        - Verbose mode on
+        - Switch to selected input (if any was provided)
+        - Unmute
+        Print information about the amplifier
         """
         self._set_device_to_known_state()
         self.device_info()
@@ -452,7 +443,10 @@ class PrimareController():
         :type volume: int
         :rtype: :class:`True` if success, :class:`False` if failure
         """
-        target_primare_volume = int(round(volume * self.VOLUME_LEVELS / 100.0))
+        # TODO: The conversion should be moved to the mopidy-primare plug-in,
+        # it does not belong here
+        target_primare_volume = int(
+            round(volume * self._VOLUME_LEVELS / 100.0))
         logger.debug("volume_set - target volume: {}".format(
             target_primare_volume))
         self._send_command('volume_set',
@@ -496,7 +490,7 @@ class PrimareController():
 
     def mute_get(self):
         """Get mute state of the mixer."""
-        self._send_command('mute_toggle')
+        self._send_command('mute_get')
 
     def mute_set(self, mute):
         """Enable or disable mute on device.
@@ -549,14 +543,18 @@ class PrimareController():
         to send the command.
         """
         # TODO
-        pass
+        self._send_command('remote_cmd', cmd)
 
     def ir_input_toggle(self):
         """Toggle IR input source on device between front and back."""
         self._send_command('ir_input_toggle')
 
     def ir_input_set(self, ir_input):
-        """Select either front or back as current IR input source on device."""
+        """Select either front or back as current IR input source on device.
+
+        False = Front,
+        True = Back
+        """
         ir_value = '01' if ir_input is True else '00'
         self._send_command('ir_input_set', ir_value)
 
