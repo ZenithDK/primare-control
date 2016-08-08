@@ -45,17 +45,15 @@ class DefaultCmdGroup(click.Group):
               if not method.startswith('_')]
         rv.append('interactive')
         rv.sort()
-        logger.debug("list_commands done")
         return rv
 
     def get_command(self, ctx, name):
         """Return click command."""
-        logger.debug("get_command start")
 
         @click.pass_context
         def subcommand(*args, **kwargs):
-            logger.debug("subcommand args: {}".format(args))
-            logger.debug("subcommand kvargs: {}".format(kwargs))
+            #logger.debug("subcommand args: {}".format(args))
+            #logger.debug("subcommand kwargs: {}".format(kwargs))
             ctx = args[0]
             params = ctx.obj['parameters']
             ctx.obj['p_ctrl'] = PrimareController(port=params['port'],
@@ -77,31 +75,27 @@ class DefaultCmdGroup(click.Group):
                     logger.info("User aborted")
                 except TypeError as e:
                     logger.error(e)
-            logger.debug("get_command.subcommand() done")
 
-        # attach doc from original callable so it will appear
-        # in CLI output
         if name == "interactive":
             cmd = click.Group.get_command(self, ctx, 'interactive')
         else:
             if name in [method for method in dir(PrimareController)
                         if not method.startswith('_')]:
+                # attach doc from original callable so it will appear in CLI
+                # output
                 subcommand.__doc__ = getattr(PrimareController, name).__doc__
                 if getattr(PrimareController,
                            name).__func__.__code__.co_argcount > 1:
-                    logger.debug("Add argument to function: {}".format(name))
                     params_arg = [click.Argument(("value",))]
                 else:
-                    logger.debug("Function takes no argument: {}".format(name))
                     params_arg = None
 
                 cmd = click.Command(name,
                                     params=params_arg,
                                     callback=subcommand)
             else:
-                logger.debug("get_command no_such_cmd")
+                #logger.debug("get_command no_such_cmd")
                 cmd = None
-        logger.debug("get_command done")
         return cmd
 
 
@@ -135,7 +129,6 @@ class DefaultCmdGroup(click.Group):
               "on RaspberryPi.")
 def cli(ctx, amp_info, baudrate, debug, port):
     """Prototype command."""
-    logger.debug("cli() start")
     try:
         # on Windows, we need port to be an integer
         port = int(port)
@@ -150,8 +143,6 @@ def cli(ctx, amp_info, baudrate, debug, port):
         'debug': debug,
         'port': port,
     }
-
-    logger.debug("cli() end")
 
 
 @cli.command()
@@ -206,7 +197,6 @@ Available commands are:
 
             else:
                 parsed_cmd = nb.split()
-                logger.info("parsed_cmd: {}".format(parsed_cmd))
                 command = getattr(ctx.obj['p_ctrl'], parsed_cmd[0], None)
                 if command:
                     try:
@@ -236,5 +226,4 @@ Available commands are:
     ctx.obj['p_ctrl'] = None
 
 if __name__ == '__main__':
-    logger.debug("Starting primare_interface.py")
     cli()

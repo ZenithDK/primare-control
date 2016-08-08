@@ -196,8 +196,9 @@ class PrimareController():
         self._modelname = ''
         self._swversion = ''
         self._inputname = ''
-        self._source = source
-        # Volume in range 0..VOLUME_LEVELS. :class:`None` before calibration.
+        if source:
+            self.input_set(source)
+        # Volume in range 0..VOLUME_LEVELS.
         if volume:
             self.volume_set(volume)
 
@@ -212,22 +213,8 @@ class PrimareController():
                    deviceNameOrPortNumber=port,
                    reactor=reactor,
                    baudrate=int(baudrate))
-        self._thread_id = Thread(target=reactor.run, args=(False,))
+        self._thread_id = Thread(name="TwistedReactor", target=reactor.run, args=((False,)))
         self._thread_id.start()
-
-    def __enter__(self):
-        """Context manager entry."""
-        logger.info("__enter__")
-        return self
-
-    def __exit__(self, type, value, traceback):
-        """Context manager exit."""
-        logger.info("__exit__")
-
-    def __del__(self):
-        """Delete the PrimareController instance."""
-        logger.info("__del__")
-        pass
 
     def close(self):
         """Close down PrimareController transport and threads."""
@@ -241,17 +228,10 @@ class PrimareController():
         logger.debug('_set_device_to_known_state')
         self.verbose_set(True)
         self.power_on()
-        if self._source is not None:
-            self.input_set(self._source)
         self.mute_set(False)
 
     def _primare_reader(self, rawdata):
-        # From the documentation:
-        # Escape sequence
-        # If any variable or value byte is equal to <DLE>, this byte must be
-        # sent twice to avoid confusing this with end of message.
-        logger.debug('_primare_reader - decoded: %s',
-                     binascii.hexlify(rawdata))
+        logger.debug('_primare_reader - decoded: %s', binascii.hexlify(rawdata))
 
         # For some reason, an empty line is retrieved sometimes
         # This is seen after input_next/prev.
@@ -321,13 +301,10 @@ class PrimareController():
             self._swversion = data
 
     def _send_command(self, variable, option=None):
-        """Send the specified command to the amplifier.
+        """Send command to the amplifier with optional data.
 
-        :param variable: String key for the PRIMARE_CMD dict
-        :type variable: string
-        :param option: String value needed for some of the commands
-        :type option: string
-        :rtype: :class:`True` if success, :class:`False` if failure
+        Variable: String key for the PRIMARE_CMD dict
+        Option: String value needed for some of the commands, None if unused
         """
         command = PRIMARE_CMD[variable][INDEX_CMD]
         data = PRIMARE_CMD[variable][INDEX_VARIABLE]
@@ -373,7 +350,6 @@ class PrimareController():
         Set the receiver to a known state:
         - Power on
         - Verbose mode on
-        - Switch to selected input (if any was provided)
         - Unmute
         Print information about the amplifier
         """
@@ -406,51 +382,58 @@ class PrimareController():
         self._send_command('power_toggle')
 
     def input_set(self, source):
-        """Set the current input used by the Primare amplifier."""
-        self._send_command('input_set', '{:02X}'.format(int(source) % 8))
+        """Set the current input used by the Primare amplifier.
+
+        Valid values are between 1 and 12 for I32.
+        For I22 the valid values are between 1 and 7.
+        1 = IN1
+        2 = IN2
+        3 = IN3
+        4 = IN4
+        5 = IN5
+        6 = MEDIA
+        7 = DIG1
+        8 = DIG2
+        9 = DIG3
+        10 = DIG4
+        11 = PC
+        12 = BT
+        """
+        self._send_command('input_set', '{:02X}'.format(int(source) % 13))
         self.inputname_current_get()
 
     def input_next(self):
-        """Select next input on device."""
+        """Select next input on device.
+        
+        After changing the input, we request the input name.
+        """
         self._send_command('input_next')
         self.inputname_current_get()
 
     def input_prev(self):
-        """Select previous input on device."""
+        """Select previous input on device.
+        
+        After changing the input, we request the input name.
+        """
         self._send_command('input_prev')
         self.inputname_current_get()
 
     def volume_get(self):
-        """Get volume level of the mixer on a linear scale from 0 to 100.
+        """Get volume level of the amplifier on a linear scale from 0 to 79.
 
         Example values:
-
-        0:
-        Silent
-        100:
-        Maximum volume.
-        :class:`None`:
-        Volume is unknown.
-
-        :rtype: int in range [0..100] or :class:`None`
+        0: Silent
+        79: Maximum volume.
         """
         self._send_command('volume_get')
 
     def volume_set(self, volume):
         """Set volume level of the amplifier.
 
-        :param volume: Volume in the range [0..100]
-        :type volume: int
-        :rtype: :class:`True` if success, :class:`False` if failure
+        Range is 0-79.
         """
-        # TODO: The conversion should be moved to the mopidy-primare plug-in,
-        # it does not belong here
-        target_primare_volume = int(
-            round(volume * self._VOLUME_LEVELS / 100.0))
-        logger.debug("volume_set - target volume: {}".format(
-            target_primare_volume))
-        self._send_command('volume_set',
-                           '{:02X}'.format(target_primare_volume))
+        self._send_command('volume_set', '{:02X}'.format(
+            volume if volume < 80 else 0x4F))
         # There's a crazy bug where setting the volume to 65 and above will
         # generate a reply indicating a volume of 1 less!?
         # Hence the work-around
@@ -471,18 +454,26 @@ class PrimareController():
         """Decrease volume by one step."""
         self._send_command('volume_down')
 
-    def balance_adjust(self, adjustment):
-        """Modify volume balance settings."""
-        # TODO
-        pass
+    def balance_adjust_left(self):
+        """Adjust balance to left."""
+        self._send_command('balance_adjust', '{:02X}'.format(0x01))
+
+    def balance_adjust_right(self):
+        """Adjust balance to right."""
+        self._send_command('balance_adjust', '{:02X}'.format(0xFF))
 
     def balance_set(self, balance):
         """Set specific balance setting.
 
-        Value 10 means centered. Lower values adjusts balance to the left.
+        Value 0 means centered.
+        1-9 adjusts balance to the right
+        11-19 adjusts balance to the left.
+        The documentation seems inconsistent with the real world?
         """
-        # TODO
-        pass
+        if balance > 10:
+            balance = 0xFF - (balance - 11)
+        logger.info("balance set arg: {}".format(balance))
+        self._send_command('balance_set', "{:02X}".format(balance))
 
     def mute_toggle(self):
         """Toggle mute on device."""
@@ -495,9 +486,8 @@ class PrimareController():
     def mute_set(self, mute):
         """Enable or disable mute on device.
 
-        :param mute: :class:`True` to mute, :class:`False` to unmute
-        :type mute: bool
-        :rtype: :class:`True` if success, :class:`False` if failure
+        True = mute
+        False = Unmute
         """
         mute_value = '01' if mute is True else '00'
         self._send_command('mute_set', mute_value)
@@ -520,7 +510,11 @@ class PrimareController():
         self._send_command('verbose_toggle')
 
     def verbose_set(self, verbose):
-        """Enable or disables verbose mode on device."""
+        """Enable or disables verbose mode on device.
+
+        True = Enable verbose mode.
+        False = Disable verbose mode.
+        """
         verbose_value = '01' if verbose is True else '00'
         self._send_command('verbose_set', verbose_value)
 
@@ -542,7 +536,6 @@ class PrimareController():
         The command will be treated as if the IR remote control has been used
         to send the command.
         """
-        # TODO
         self._send_command('remote_cmd', cmd)
 
     def ir_input_toggle(self):
